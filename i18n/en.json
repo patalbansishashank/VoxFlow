@@ -1,0 +1,24 @@
+{
+  "widget": {
+    "idle_tooltip": "Hold to record (or click)",
+    "recording_tooltip": "Recording... release to transcribe",
+    "processing_tooltip": "Transcribing..."
+  },
+  "settings": {
+    "title": "VoxFlow Settings",
+    "soniox_key": "Soniox API Key",
+    "soniox_key_desc": "API key from console.soniox.com",
+    "sarvam_key": "Sarvam AI API Key",
+    "sarvam_key_desc": "API subscription key from dashboard.sarvam.ai",
+    "provider": "Provider",
+    "provider_desc": "Speech-to-text service provider",
+    "language": "Language",
+    "language_desc": "Language code (e.g. en-IN, hi-IN)",
+    "append_newline": "Append Newline",
+    "append_newline_desc": "Add a newline after pasted text"
+  },
+  "provider": {
+    "soniox": "Soniox AI",
+    "sarvam": "Sarvam AI"
+  }
+}

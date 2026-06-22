@@ -1,0 +1,443 @@
+#include "stream_api.h"
+
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
+
+#include <cstring>
+#include <chrono>
+#include <algorithm>
+#include <cstdio>
+#include <cstdarg>
+#include <fcntl.h>
+#include <sys/socket.h>
+
+static FILE* logfile = nullptr;
+static std::mutex log_mutex;
+static void debug_log(const char* fmt, ...) {
+    if (!logfile) {
+        logfile = fopen("/tmp/voxflow-debug.log", "a");
+    }
+    if (logfile) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(logfile, fmt, args);
+        va_end(args);
+        fflush(logfile);
+    }
+}
+
+using json = nlohmann::json;
+
+static size_t noop_write_cb(char* b, size_t s, size_t n, void* u) {
+    (void)b; (void)s; (void)n; (void)u;
+    return 0;
+}
+
+WebSocketStream::WebSocketStream() = default;
+
+WebSocketStream::~WebSocketStream() {
+    if (open_) {
+        close();
+    }
+}
+
+std::string WebSocketStream::base64_encode(const uint8_t* data, size_t len) {
+    static constexpr char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+        if (i + 1 < len) n |= static_cast<uint32_t>(data[i + 1]) << 8;
+        if (i + 2 < len) n |= static_cast<uint32_t>(data[i + 2]);
+        out += table[(n >> 18) & 0x3F];
+        out += table[(n >> 12) & 0x3F];
+        out += (i + 1 < len) ? table[(n >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? table[n & 0x3F] : '=';
+    }
+    return out;
+}
+
+bool WebSocketStream::open(const std::string& provider,
+                           const std::string& api_key,
+                           const std::string& language,
+                           int sample_rate,
+                           TranscriptCallback cb) {
+    if (open_) return false;
+
+    provider_ = provider;
+    api_key_ = api_key;
+    language_ = language;
+    sample_rate_ = sample_rate;
+    callback_ = std::move(cb);
+    transcript_.clear();
+    latest_text_.clear();
+    server_error_.clear();
+    latest_end_ms_ = 0;
+    finished_ = false;
+    stopping_ = false;
+    flush_sent_ = false;
+
+    curl_ = curl_easy_init();
+    if (!curl_) return false;
+
+    std::string url;
+    if (provider_ == "soniox") {
+        url = "wss://stt-rt.soniox.com/transcribe-websocket";
+    } else {
+        url = "wss://api.sarvam.ai/speech-to-text/ws"
+              "?model=saaras:v3"
+              "&mode=transcribe"
+              "&language-code=" + language_ +
+              "&sample_rate=" + std::to_string(sample_rate_) +
+              "&input_audio_codec=pcm_s16le"
+              "&flush_signal=true";
+    }
+
+    curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_CONNECT_ONLY, 2L);
+    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 600L);
+    curl_easy_setopt(curl_, CURLOPT_USERAGENT, "VoxFlow/1.0");
+    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, noop_write_cb);
+
+    if (provider_ == "sarvam") {
+        struct curl_slist* headers = nullptr;
+        std::string auth = "api-subscription-key: " + api_key_;
+        headers = curl_slist_append(headers, auth.c_str());
+        curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
+    }
+
+    CURLcode res = curl_easy_perform(curl_);
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl_);
+        curl_ = nullptr;
+        return false;
+    }
+
+    curl_socket_t sockfd;
+    res = curl_easy_getinfo(curl_, CURLINFO_ACTIVESOCKET, &sockfd);
+    if (res == CURLE_OK && sockfd != CURL_SOCKET_BAD) {
+        int flags = fcntl(sockfd, F_GETFL, 0);
+        fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    open_ = true;
+    ws_thread_ = std::thread(&WebSocketStream::ws_thread_fn, this);
+
+    return true;
+}
+
+bool WebSocketStream::send_text(const std::string& msg) {
+    size_t sent = 0;
+    CURLcode res = curl_ws_send(curl_, msg.c_str(), msg.size(), &sent, 0, CURLWS_TEXT);
+    return res == CURLE_OK;
+}
+
+bool WebSocketStream::send_binary(const void* data, size_t len) {
+    size_t sent = 0;
+    CURLcode res = curl_ws_send(curl_, data, len, &sent, 0, CURLWS_BINARY);
+    return res == CURLE_OK;
+}
+
+bool WebSocketStream::send_empty_frame() {
+    size_t sent = 0;
+    CURLcode res = curl_ws_send(curl_, "", 0, &sent, 0, CURLWS_BINARY);
+    return res == CURLE_OK;
+}
+
+bool WebSocketStream::send_flush() {
+    if (provider_ == "soniox") {
+        // Soniox: WebSocket close frame signals end-of-stream, server returns final transcript
+        size_t sent = 0;
+        CURLcode res = curl_ws_send(curl_, nullptr, 0, &sent, 0, CURLWS_CLOSE);
+        return res == CURLE_OK;
+    } else {
+        json flush = {{"type", "flush"}};
+        return send_text(flush.dump());
+    }
+}
+
+bool WebSocketStream::send_config() {
+    if (provider_ == "soniox") {
+        return send_soniox_config();
+    }
+    return true;
+}
+
+bool WebSocketStream::send_soniox_config() {
+    json config = {
+        {"api_key", api_key_},
+        {"model", "stt-rt-v5"},
+        {"audio_format", "pcm_s16le"},
+        {"num_channels", 1},
+        {"sample_rate", sample_rate_},
+        {"enable_endpoint_detection", false}
+    };
+
+    if (!language_.empty() && language_ != "auto") {
+        std::string lang = language_;
+        auto dash = lang.find('-');
+        if (dash != std::string::npos) {
+            lang = lang.substr(0, dash);
+        }
+        config["language_hints"] = {lang};
+    }
+
+    return send_text(config.dump());
+}
+
+bool WebSocketStream::send_audio(const int16_t* samples, size_t count) {
+    if (!open_ || stopping_) return false;
+
+    std::vector<uint8_t> pcm(reinterpret_cast<const uint8_t*>(samples),
+                             reinterpret_cast<const uint8_t*>(samples) + count * sizeof(int16_t));
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        send_queue_.push(std::move(pcm));
+    }
+    queue_cv_.notify_one();
+    return true;
+}
+
+StreamResult WebSocketStream::close() {
+    StreamResult result;
+
+    if (!open_ || !curl_) {
+        result.error_message = "Stream not open";
+        return result;
+    }
+
+    stopping_ = true;
+    queue_cv_.notify_one();
+
+    {
+        std::unique_lock<std::mutex> lock(result_mutex_);
+        bool timed_out = !result_cv_.wait_for(lock, std::chrono::seconds(30), [this] {
+            return finished_.load();
+        });
+        debug_log("[DEBUG] close() wait finished, timed_out=%d, transcript_='%s', server_error_='%s'\n",
+                  timed_out, transcript_.c_str(), server_error_.c_str());
+    }
+
+    if (ws_thread_.joinable()) {
+        ws_thread_.join();
+    }
+
+    curl_easy_cleanup(curl_);
+    curl_ = nullptr;
+    open_ = false;
+
+    {
+        std::lock_guard<std::mutex> lock(result_mutex_);
+        if (!transcript_.empty()) {
+            result.success = true;
+            result.text = transcript_;
+        } else if (!server_error_.empty()) {
+            result.error_code = -4;
+            result.error_message = "Server error: " + server_error_;
+        } else {
+            result.error_code = -1;
+            result.error_message = "No transcript received";
+        }
+    }
+
+    return result;
+}
+
+void WebSocketStream::ws_thread_fn() {
+    if (!send_config()) {
+        finished_ = true;
+        result_cv_.notify_all();
+        return;
+    }
+
+    char buf[65536];
+    bool sent_flush = false;
+
+    while (!finished_) {
+        if (!sent_flush) {
+            size_t qsize;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                qsize = send_queue_.size();
+                while (!send_queue_.empty()) {
+                    auto frame = std::move(send_queue_.front());
+                    send_queue_.pop();
+
+                    if (provider_ == "soniox") {
+                        bool ok = send_binary(frame.data(), frame.size());
+                        debug_log("[DEBUG] Sent binary frame %zu bytes: %s\n", frame.size(), ok ? "OK" : "FAIL");
+                    } else {
+                        std::string b64 = base64_encode(frame.data(), frame.size());
+                        json msg = {
+                            {"audio", {
+                                {"data", b64},
+                                {"sample_rate", sample_rate_},
+                                {"encoding", "audio/wav"}
+                            }}
+                        };
+                        bool ok = send_text(msg.dump());
+                        debug_log("[DEBUG] Sent Sarvam frame %zu bytes: %s\n", frame.size(), ok ? "OK" : "FAIL");
+                    }
+                }
+            }
+            debug_log("[DEBUG] Drained %zu frames from queue, stopping=%d\n", qsize, stopping_.load());
+
+            if (stopping_ && send_queue_.empty()) {
+                debug_log("[DEBUG] Sending flush, transcript_='%s' latest_text_='%s'\n",
+                          transcript_.c_str(), latest_text_.c_str());
+                send_flush();
+                sent_flush = true;
+                flush_sent_ = true;
+                {
+                    std::lock_guard<std::mutex> lock(result_mutex_);
+                    debug_log("[DEBUG] After flush, transcript_='%s'\n", transcript_.c_str());
+                    // For Sarvam: transcript already received before flush, finish immediately.
+                    // For Soniox: continue recv loop to capture final tokens after close frame.
+                    if (!transcript_.empty() && provider_ != "soniox") {
+                        debug_log("[DEBUG] Flush sent, transcript already available, finishing\n");
+                        finished_ = true;
+                        result_cv_.notify_all();
+                        break;
+                    }
+                }
+            }
+        }
+
+        const struct curl_ws_frame* frame = nullptr;
+        size_t nread = 0;
+        CURLcode res = curl_ws_recv(curl_, buf, sizeof(buf) - 1, &nread, &frame);
+
+        if (res == CURLE_OK && nread > 0) {
+            buf[nread] = '\0';
+            debug_log("[DEBUG] Recv %zu bytes\n", nread);
+
+            if (frame && (frame->flags & CURLWS_TEXT)) {
+                debug_log("[DEBUG] Full Recv: %s\n", std::string(buf, nread).c_str());
+                try {
+                    auto j = json::parse(std::string(buf, nread));
+
+                    if (provider_ == "soniox") {
+                        if (j.contains("error_type")) {
+                            {
+                                std::lock_guard<std::mutex> lock(result_mutex_);
+                                server_error_ = j.value("error_message", "Unknown server error");
+                                if (transcript_.empty() && !latest_text_.empty()) {
+                                    transcript_ = latest_text_;
+                                }
+                            }
+                            finished_ = true;
+                            result_cv_.notify_all();
+                            break;
+                        }
+
+                        if (j.contains("tokens")) {
+                            std::string full;
+                            for (auto& tok : j["tokens"]) {
+                                if (tok.contains("text")) {
+                                    std::string text = tok["text"].get<std::string>();
+                                    bool is_final = tok.value("is_final", false);
+
+                                    // Skip Soniox control tokens
+                                    if (text == "<end>") continue;
+
+                                    full += text;
+
+                                    // Append NEW tokens (beyond latest_end_ms_) directly
+                                    uint64_t start_ms = tok.value("start_ms", UINT64_MAX);
+                                    uint64_t end_ms = tok.value("end_ms", 0);
+                                    if (start_ms >= latest_end_ms_ && start_ms != UINT64_MAX) {
+                                        std::lock_guard<std::mutex> lock(result_mutex_);
+                                        transcript_ += text;
+                                    }
+                                    if (end_ms > latest_end_ms_) {
+                                        latest_end_ms_ = end_ms;
+                                    }
+
+                                    if (callback_) {
+                                        TranscriptSegment seg;
+                                        seg.text = text;
+                                        seg.is_final = is_final;
+                                        callback_(seg);
+                                    }
+                                }
+                            }
+                            if (!full.empty()) {
+                                std::lock_guard<std::mutex> lock(result_mutex_);
+                                latest_text_ = full;
+                            }
+                        }
+
+                        if (j.contains("finished") && j["finished"].get<bool>()) {
+                            debug_log("[DEBUG] Server sent finished=true\n");
+                            {
+                                std::lock_guard<std::mutex> lock(result_mutex_);
+                                debug_log("[DEBUG] finished handler: transcript_='%s' latest_text_='%s'\n",
+                                          transcript_.c_str(), latest_text_.c_str());
+                                if (transcript_.empty() && !latest_text_.empty()) {
+                                    transcript_ = latest_text_;
+                                    debug_log("[DEBUG] Copied latest_text_ to transcript_ -> '%s'\n",
+                                              transcript_.c_str());
+                                }
+                            }
+                            finished_ = true;
+                            result_cv_.notify_all();
+                            break;
+                        }
+                    } else {
+                        std::string type = j.value("type", "data");
+
+                        if (type == "data" && j.contains("data")) {
+                            auto& data = j["data"];
+                            if (data.contains("transcript")) {
+                                std::string text = data["transcript"].get<std::string>();
+                                if (!text.empty()) {
+                                    {
+                                        std::lock_guard<std::mutex> lock(result_mutex_);
+                                        transcript_ += text;
+                                    }
+                                    if (callback_) {
+                                        TranscriptSegment seg;
+                                        seg.text = text;
+                                        seg.is_final = true;
+                                        callback_(seg);
+                                    }
+                                    if (flush_sent_.load()) {
+                                        finished_ = true;
+                                        result_cv_.notify_all();
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (type == "error") {
+                            {
+                                std::lock_guard<std::mutex> lock(result_mutex_);
+                                if (j.contains("data") && j["data"].is_object() && j["data"].contains("message")) {
+                                    server_error_ = j["data"]["message"].get<std::string>();
+                                } else {
+                                    server_error_ = j.value("message", "Unknown Sarvam error");
+                                }
+                            }
+                            finished_ = true;
+                            result_cv_.notify_all();
+                            break;
+                        }
+                    }
+                } catch (...) {
+                }
+            }
+        } else if (res == CURLE_AGAIN) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } else {
+            break;
+        }
+    }
+
+    if (!finished_) {
+        finished_ = true;
+        result_cv_.notify_all();
+    }
+}
