@@ -1,12 +1,11 @@
-# Maintainer: Your Name <your@email.com>
-# Contributor: Your Name <your@email.com>
+# Maintainer: Shashank Patalbansi <patalbansi.shashank@gmail.com>
 
 pkgname=voxflow
 pkgver=1.0.0
 pkgrel=1
 pkgdesc="Push-to-talk speech-to-text bar widget for Noctalia"
 arch=('x86_64')
-url="https://github.com/yourusername/voxflow"
+url="https://github.com/patalbansishashank/VoxFlow"
 license=('MIT')
 depends=(
   'quickshell'

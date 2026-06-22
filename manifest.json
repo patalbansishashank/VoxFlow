@@ -3,9 +3,9 @@
   "name": "VoxFlow",
   "version": "1.0.0",
   "minNoctaliaVersion": "3.6.0",
-  "author": "Your Name",
+  "author": "Shashank Patalbansi",
   "license": "MIT",
-  "repository": "https://github.com/yourusername/voxflow",
+  "repository": "https://github.com/patalbansishashank/VoxFlow",
   "description": "Push-to-talk speech-to-text bar widget",
   "entryPoints": {
     "main": "Main.qml",
