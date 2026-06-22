@@ -183,6 +183,7 @@ bool WebSocketStream::send_soniox_config() {
             lang = lang.substr(0, dash);
         }
         config["language_hints"] = {lang};
+        config["language_hints_strict"] = true;
     }
 
     return send_text(config.dump());
