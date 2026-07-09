@@ -76,7 +76,10 @@ mkdir -p "$PLUGIN_DIR/bin"
 for item in manifest.json Main.qml BarWidget.qml Settings.qml README.md i18n; do
   [[ -e "$SRC/$item" ]] && cp -r "$SRC/$item" "$PLUGIN_DIR/"
 done
-install -m 755 "$SRC/bin/voxflow-backend" "$PLUGIN_DIR/bin/voxflow-backend"
+# install the backend atomically (temp + rename): a copy-in-place would hit ETXTBSY
+# if the currently-loaded plugin is still running the old binary from this path.
+install -m 755 "$SRC/bin/voxflow-backend" "$PLUGIN_DIR/bin/voxflow-backend.new"
+mv -f "$PLUGIN_DIR/bin/voxflow-backend.new" "$PLUGIN_DIR/bin/voxflow-backend"
 echo "✓ copied plugin -> $PLUGIN_DIR"
 
 # 6) restore the user's settings (or seed from the repo copy if none was installed yet)
@@ -99,9 +102,9 @@ Done. To finish:
   2) Enable "VoxFlow" in Noctalia → Settings → Plugins → Installed (if not already),
      and set your API key(s) in the plugin's settings.
 
-  3) Bind the toggle to a key (see CLAUDE.md → "Keybind"). This machine runs Hyprland
-     (Lua config), so add to ~/.config/hypr/hyprland.lua:
-       hl.bind("SUPER + Z", hl.dsp.exec_cmd("qs -c noctalia-shell ipc call plugin:voxflow toggleRecording"))
+  3) Set the toggle shortcut in the plugin's settings → "Keyboard Shortcut" (defaults
+     to SUPER + Z). VoxFlow registers it in Hyprland for you and retires any hand-written
+     bind in ~/.config/hypr/hyprland.lua (a .voxflow-kb-backup is kept). No manual editing.
 
 The plugin now runs from local disk — /media/DEV no longer needs to be mounted at login.
 EOF

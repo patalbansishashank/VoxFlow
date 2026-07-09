@@ -68,10 +68,20 @@ Item {
         sarvam_api_key: pluginApi.pluginSettings?.sarvamApiKey || "",
         provider: pluginApi.pluginSettings?.provider || "soniox",
         language: pluginApi.pluginSettings?.language || "en-IN",
-        append_newline: pluginApi.pluginSettings?.appendNewline ?? true
+        append_newline: pluginApi.pluginSettings?.appendNewline ?? true,
+        // Chords the backend registers in Hyprland (hl.bind). The plugin owns these,
+        // not hyprland.lua. See Settings.qml keybind recorder.
+        keybinds: pluginApi.pluginSettings?.keybinds ?? ["SUPER + Z"]
       }
     }
     backend.write(JSON.stringify(cfg) + "\n")
+  }
+
+  // Called by the settings keybind recorder: suspend the live binds while capturing a
+  // chord (so pressing an already-bound chord reaches the recorder, not the toggle).
+  function setCaptureMode(on) {
+    if (!pluginApi) return
+    backend.write(JSON.stringify({ method: "set_capture_mode", params: { on: on } }) + "\n")
   }
 
   IpcHandler {

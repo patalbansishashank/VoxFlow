@@ -18,7 +18,8 @@
       "sarvamApiKey": "",
       "provider": "soniox",
       "language": "en-IN",
-      "appendNewline": true
+      "appendNewline": true,
+      "keybinds": ["SUPER + Z"]
     }
   }
 }

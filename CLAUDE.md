@@ -93,24 +93,38 @@ The bar disappears for ~2–5 s; that's expected. The user normally starts Nocta
 Hyprland autostart, so this transient unit is only for the test cycle. **Restarting the shell
 is the #1 footgun on this machine — prefer to avoid it unless you actually need to test QML.**
 
-## Keybind
+## Keybind — plugin-managed (like HyperZone)
 
-VoxFlow exposes an IPC toggle; bind it to a key that calls:
+The toggle shortcut is **owned by the plugin**, editable in the settings pane's "Keyboard
+Shortcut" section (a `KeybindRecorder` ported from HyperZone). Chords are stored in plugin
+`settings.json` (`keybinds: ["SUPER + Z"]`); the **C++ backend** registers them live in Hyprland.
+It is NOT hand-written in hyprland.lua anymore.
 
-```
-qs -c noctalia-shell ipc call plugin:voxflow toggleRecording
-```
+How it works (all in `backend/src/hypr.{h,cpp}` + wired in `main.cpp`):
+- The bound chord runs `qs -c noctalia-shell ipc call plugin:voxflow toggleRecording`.
+- `hypr::request()` connects to the Hyprland socket
+  (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock`) and sends
+  `eval hl.bind("SUPER + Z", hl.dsp.exec_cmd("…toggleRecording"))` → reply `ok`. This is the
+  only mechanism that works here: Hyprland runs the **non-legacy Lua parser**, so
+  `hyprctl keyword bind …` is rejected ("keyword can't work with non-legacy parsers").
+- `KeybindManager::reconcile(desired, initial)` diffs desired vs live binds. On the **first**
+  `set_config` after `ready` it unbinds-then-binds each chord to clear any duplicate the running
+  Hyprland already loaded from hyprland.lua at login.
+- `migrate_hyprland_config()` runs once: comments out any hand-written `hl.bind(... plugin:voxflow ...)`
+  line in `~/.config/hypr/hyprland.lua` (marker `-- voxflow-managed keybind`, backup
+  `hyprland.lua.voxflow-kb-backup`) so the plugin fully owns the chord across reloads/logins.
+- **Capture mode:** while the settings recorder is capturing a chord it calls
+  `set_capture_mode {on:true}` → backend unbinds all live binds so pressing an already-bound chord
+  reaches the recorder instead of firing the toggle; `{on:false}` reconciles to the new chord.
+- Backend JSON-RPC surface for this: `set_config` param `keybinds:[…]`, method `set_capture_mode {on}`.
+  QML side: `Main.qml` `updateConfig()` sends `keybinds`; `Main.qml` `setCaptureMode(on)` passthrough;
+  `Settings.qml` `KeybindRecorder` component + `kbAdd/kbRemove/kbReset/normalizeCombo`.
 
-- **This machine runs Hyprland with the Lua / non-legacy config parser** (like HyperZone).
-  Add to `~/.config/hypr/hyprland.lua`:
-  ```lua
-  hl.bind("SUPER + Z", hl.dsp.exec_cmd("qs -c noctalia-shell ipc call plugin:voxflow toggleRecording"))
-  ```
-  Or register it live (no reload) via the running Hyprland socket:
-  `eval hl.bind("SUPER + Z", hl.dsp.exec_cmd("qs -c noctalia-shell ipc call plugin:voxflow toggleRecording"))`.
-  `hyprctl keyword bind …` is rejected here ("keyword can't work with non-legacy parsers").
-- **Niri** (documented in README): `Mod+Z { spawn "qs" "-c" "noctalia-shell" "ipc" "call" "plugin:voxflow" "toggleRecording"; }`.
-- It's a single toggle — press to start recording, press again to stop and transcribe.
+Caveats (shared with HyperZone): live binds are lost on a Hyprland **config reload** and re-asserted
+on the next plugin/backend start (login). Off Hyprland (`hypr::available()` false) the backend
+skips all of this and just stores the chord — bind it yourself (Niri: `Mod+Z { spawn "qs" "-c"
+"noctalia-shell" "ipc" "call" "plugin:voxflow" "toggleRecording"; }`). It's a single toggle —
+press to start, press again to stop and transcribe.
 
 ## Secrets / settings.json — IMPORTANT
 

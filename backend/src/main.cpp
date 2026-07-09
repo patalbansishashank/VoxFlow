@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "clipboard.h"
 #include "stream_api.h"
+#include "hypr.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,8 @@ static AppConfig config;
 static AudioCapture capture;
 static Clipboard clipboard;
 static std::unique_ptr<WebSocketStream> stream;
+static KeybindManager keybinds;
+static bool first_config = true;
 
 static void write_output(const std::string& line) {
     std::lock_guard<std::mutex> lock(cout_mutex);
@@ -123,6 +126,13 @@ static void stop_recording(int64_t id) {
 
 static void handle_config(const json& params) {
     config.from_json(params);
+    // Register the toggle chord(s) live in Hyprland. Skip while the settings UI is
+    // capturing a chord (binds are suspended then; they get reconciled on capture end).
+    if (hypr::available() && !keybinds.is_capturing()) {
+        if (first_config) keybinds.migrate_hyprland_config();
+        keybinds.reconcile(config.keybinds, first_config);
+        first_config = false;
+    }
     write_output(make_event("config_updated", config.to_json()) + "\n");
 }
 
@@ -141,9 +151,14 @@ static void process_line(const std::string& line) {
         if (req.id) {
             write_output(make_result(req.id, config.to_json()) + "\n");
         }
+    } else if (req.method == "set_capture_mode") {
+        // The settings UI toggles this around recording a new chord.
+        if (hypr::available())
+            keybinds.set_capture(req.params.value("on", false), config.keybinds);
     } else if (req.method == "ping") {
         write_output(make_result(req.id, {{"pong", true}}) + "\n");
     } else if (req.method == "shutdown") {
+        keybinds.clear();
         running = false;
     }
 }

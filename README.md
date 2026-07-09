@@ -66,17 +66,23 @@ Open **VoxFlow Settings** from the Noctalia bar widget menu and enter at least o
 | **Soniox** | [console.soniox.com](https://console.soniox.com) | ~$0.12/hr |
 | **Sarvam AI** | [api.sarvam.ai](https://api.sarvam.ai) | ~₹30/hr |
 
-### Niri Keybinding
+### Keyboard shortcut
 
-Add to your `~/.config/niri/config.kdl` (or a `cfg/keybinds.kdl`):
+Open **VoxFlow Settings** → **Keyboard Shortcut**, click **Record**, and press the chord you
+want (default **Super + Z**). VoxFlow registers it for you — no config-file editing.
 
-```kdl
-binds {
-    Mod+Z { spawn "qs" "-c" "noctalia-shell" "ipc" "call" "plugin:voxflow" "toggleRecording"; }
-}
-```
+- **Hyprland:** the plugin binds it live via the Hyprland socket and retires any hand-written
+  `plugin:voxflow` bind in `~/.config/hypr/hyprland.lua` (a `.voxflow-kb-backup` is kept). It's
+  re-asserted automatically each time the plugin loads.
+- **Niri / other compositors:** the plugin can't register binds there, so add one yourself that
+  calls the toggle IPC:
+  ```kdl
+  binds {
+      Mod+Z { spawn "qs" "-c" "noctalia-shell" "ipc" "call" "plugin:voxflow" "toggleRecording"; }
+  }
+  ```
 
-This is a single toggle — press to start recording, press again to stop and transcribe.
+It's a single toggle — press to start recording, press again to stop and transcribe.
 
 ### Language
 
