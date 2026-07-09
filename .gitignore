@@ -3,3 +3,7 @@ backend/voxflow-backend
 bin/
 *.o
 *.d
+
+# User data written by Noctalia at runtime — holds API keys, never commit
+settings.json
+__pycache__/
