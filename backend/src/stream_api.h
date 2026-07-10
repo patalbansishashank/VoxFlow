@@ -46,6 +46,15 @@ public:
     // cancel a recording (start-then-stop within a moment). Discards any pending result.
     void abort();
 
+    // Thread-safe: make an in-progress close() stop waiting and return now (does NOT join;
+    // the thread that called close() still owns the join). Used to abandon a finalize
+    // in-flight when the user cancels transcription to start a new recording.
+    void signal_stop() {
+        finished_.store(true);
+        result_cv_.notify_all();
+        queue_cv_.notify_all();
+    }
+
     bool is_open() const { return open_.load(); }
 
 private:

@@ -19,7 +19,15 @@ Item {
     pluginApi?.pluginDir + "/bin/voxflow-backend"
 
   function startRecording() {
-    if (recording || processing) return
+    if (recording) return
+    // If a transcription is still finalizing (incl. a stuck/silent one), abandon it and
+    // record instead — the backend bumps its session so that finalize discards its result
+    // (no stray paste). This is what makes pressing the toggle again during "transcribing"
+    // cancel it and start a fresh recording.
+    if (processing) {
+      processing = false
+      processingTimer.stop()
+    }
     recording = true
     audioLevel = 0.0
     lastError = ""

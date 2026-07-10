@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <memory>
 #include <vector>
@@ -35,6 +36,13 @@ static std::chrono::steady_clock::time_point recording_started_at;
 // Serialises the shared-state part of finalize (history append + clipboard paste) across
 // the detached finalize workers below.
 static std::mutex finalize_mutex;
+// Session generation, bumped on every start_recording. A finalize worker started for an
+// older generation discards its result — this is how "press the toggle again while it's
+// transcribing" cancels the stuck transcription and records instead. `finalizing` holds
+// the stream currently being finalized so a new recording can nudge its close() to return.
+static std::atomic<uint64_t> session_gen{0};
+static std::mutex finalizing_mutex;
+static std::shared_ptr<WebSocketStream> finalizing;
 // Guards every keybind op + the config write, since the Hyprland-event listener thread
 // (below) re-asserts binds concurrently with the main JSON-RPC thread.
 static std::mutex keybind_mutex;
@@ -129,6 +137,16 @@ static std::vector<Bind> desired_binds() {
 }
 
 static bool start_recording(const json& params) {
+    // New session: abandon any transcription still finalizing (the user pressed the toggle
+    // again to cancel it and record instead). Bumping the generation makes that worker
+    // discard its result; signalling its stream makes close() return now instead of
+    // dragging out its timeout.
+    session_gen.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lk(finalizing_mutex);
+        if (finalizing) finalizing->signal_stop();
+    }
+
     int sr = params.value("sample_rate", config.sample_rate);
     int ch = params.value("channels", 1);
 
@@ -242,15 +260,27 @@ static void stop_recording(int64_t id) {
     }
 
     // Finalize (close the stream, wait for the transcript, paste) on a DETACHED worker so
-    // the JSON-RPC loop stays responsive: close() can take a few seconds — and, on a stuck
-    // stream, up to its 12s cap — but the backend must not freeze (that was the mic "going
-    // dead"). Move the stream into the worker so a new recording can open a fresh one; the
-    // mic was already released above.
-    auto owned = std::move(stream);   // global `stream` is now null
+    // the JSON-RPC loop stays responsive: close() can take a few seconds but the backend
+    // must not freeze (that was the mic "going dead"). Hand the stream to a shared_ptr so a
+    // new recording can signal it (see start_recording); the mic was already released above.
+    uint64_t my_gen = session_gen.load();
+    std::shared_ptr<WebSocketStream> sp(std::move(stream));   // global `stream` now null
+    {
+        std::lock_guard<std::mutex> lk(finalizing_mutex);
+        finalizing = sp;
+    }
     bool append_nl = config.append_newline;
-    std::thread([id, append_nl, st = std::move(owned)]() mutable {
-        StreamResult result = st->close();
-        st.reset();
+    std::thread([id, append_nl, my_gen, sp]() mutable {
+        StreamResult result = sp->close();
+        {
+            std::lock_guard<std::mutex> lk(finalizing_mutex);
+            if (finalizing == sp) finalizing.reset();
+        }
+        sp.reset();
+
+        // If a newer recording started meanwhile, the user cancelled this transcription to
+        // record again — discard it entirely (no paste, no result, no error toast).
+        if (session_gen.load() != my_gen) return;
 
         if (!result.success) {
             write_output(make_event("error", {{"message", result.error_message}}) + "\n");
