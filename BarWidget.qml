@@ -63,14 +63,22 @@ Item {
     }
   }
 
-  // Rhythmic pulse that drives the concentric rings while transcribing — same visual as
-  // the recording rings, but self-driven (no audio) so it reads as the "working" state.
+  // Steady sine pulse that drives the concentric rings while transcribing. Uses the SAME
+  // Timer mechanism as the recording level meter (levelTimer) rather than an
+  // `Animation on ...` value source, which didn't reliably run — so the rings visibly
+  // grow and shrink, making the "working" state obvious even when the server is slow.
   property real pulseDrive: 0.0
-  SequentialAnimation on pulseDrive {
+  property real pulsePhase: 0.0
+  Timer {
+    id: pulseTimer
+    interval: 33
     running: isProcessing
-    loops: Animation.Infinite
-    NumberAnimation { from: 0.12; to: 0.78; duration: 650; easing.type: Easing.InOutSine }
-    NumberAnimation { from: 0.78; to: 0.12; duration: 650; easing.type: Easing.InOutSine }
+    repeat: true
+    onTriggered: {
+      pulsePhase += 0.14                                   // ~1.5s per grow+shrink cycle
+      pulseDrive = 0.42 + 0.34 * Math.sin(pulsePhase)      // oscillates ~0.08 .. 0.76
+    }
+    onRunningChanged: if (!running) pulseDrive = 0.0
   }
 
   Rectangle {

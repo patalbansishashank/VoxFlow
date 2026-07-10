@@ -235,11 +235,11 @@ StreamResult WebSocketStream::close() {
     bool timed_out = false;
     {
         std::unique_lock<std::mutex> lock(result_mutex_);
-        // Backstop only: silent recordings are cancelled upstream (never reach close()),
-        // so this wait covers a real utterance whose server response is slow. 12s is far
-        // beyond normal finalization (~1-3s) yet keeps the backend from freezing for long
-        // if the server never answers.
-        timed_out = !result_cv_.wait_for(lock, std::chrono::seconds(12), [this] {
+        // Backstop only: real transcripts finalize in ~1-3s (Sarvam streams utterance
+        // results during recording, so flush finalizes fast). 5s is comfortable margin
+        // for a legit slow response, yet the "no transcript" case (noise, no speech that
+        // the peak-cancel didn't catch) resolves in ~5s instead of dragging on.
+        timed_out = !result_cv_.wait_for(lock, std::chrono::seconds(5), [this] {
             return finished_.load();
         });
         debug_log("[DEBUG] close() wait finished, timed_out=%d, transcript_='%s', server_error_='%s'\n",
