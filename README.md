@@ -93,8 +93,14 @@ Enter pastes into the window you came from):
 - **Super + V** — general clipboard history via `cliphist` (transcripts filtered out;
   needs `cliphist` + a `wl-paste --watch cliphist store` watcher, which Noctalia runs)
 
-Change the chords via `transcriptHistoryKeybind` / `clipboardHistoryKeybind` in the
-plugin's `settings.json` (empty string disables).
+All three shortcuts are editable in **VoxFlow Settings → Keyboard Shortcut** (removing a
+picker's pill disables that shortcut).
+
+### Live caption
+
+While you dictate, a click-through overlay at the bottom of the screen shows what the
+server has heard so far — so you can look away from the cursor and still know your words
+landed. Toggle it in Settings ("Live Caption").
 
 ### Language
 

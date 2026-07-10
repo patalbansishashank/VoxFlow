@@ -16,6 +16,9 @@ ColumnLayout {
   property string editLanguage:      "en-IN"
   property bool   editAppendNewline: true
   property var    editKeybinds:      ["SUPER + Z"]
+  property string editHistoryKb:     "SUPER + SHIFT + Z"
+  property string editClipboardKb:   "SUPER + V"
+  property bool   editShowCaption:   true
   property bool   _loaded: false
 
   // ---- keybind recorder state ----
@@ -35,6 +38,10 @@ ColumnLayout {
     editAppendNewline = pluginApi.pluginSettings.appendNewline    ?? true
     var kb = pluginApi.pluginSettings.keybinds
     editKeybinds = (kb && kb.length !== undefined) ? JSON.parse(JSON.stringify(kb)) : [defaultChord]
+    // ?? (not ||): "" is a valid value meaning "shortcut disabled".
+    editHistoryKb   = pluginApi.pluginSettings.transcriptHistoryKeybind ?? "SUPER + SHIFT + Z"
+    editClipboardKb = pluginApi.pluginSettings.clipboardHistoryKeybind  ?? "SUPER + V"
+    editShowCaption = pluginApi.pluginSettings.showLiveCaption          ?? true
     _loaded = true
   }
 
@@ -45,6 +52,7 @@ ColumnLayout {
     pluginApi.pluginSettings.provider         = root.editProvider
     pluginApi.pluginSettings.language         = root.editLanguage
     pluginApi.pluginSettings.appendNewline    = root.editAppendNewline
+    pluginApi.pluginSettings.showLiveCaption  = root.editShowCaption
     pluginApi.saveSettings()
     if (pluginApi.mainInstance) {
       pluginApi.mainInstance.updateConfig()
@@ -72,25 +80,45 @@ ColumnLayout {
     return mods.concat([key]).join(" + ")
   }
 
-  function kbAdd(raw) {
+  // Chord storage per recorder action: "toggle" is a list, the two pickers are single
+  // chords ("" = disabled).
+  function chordsFor(action) {
+    if (action === "toggle") return editKeybinds
+    var v = action === "history" ? editHistoryKb : editClipboardKb
+    return v ? [v] : []
+  }
+  function kbAdd(action, raw) {
     var combo = normalizeCombo(raw)
     if (!combo) { ToastService.showNotice("VoxFlow", "Press a shortcut like SUPER + Z"); return }
-    if (editKeybinds.indexOf(combo) !== -1) return
-    if (editKeybinds.length >= maxKeybinds) { ToastService.showNotice("VoxFlow", "Up to " + maxKeybinds + " shortcuts"); return }
-    editKeybinds = editKeybinds.concat([combo])
+    if (action === "toggle") {
+      if (editKeybinds.indexOf(combo) !== -1) return
+      if (editKeybinds.length >= maxKeybinds) { ToastService.showNotice("VoxFlow", "Up to " + maxKeybinds + " shortcuts"); return }
+      editKeybinds = editKeybinds.concat([combo])
+    } else if (action === "history") {
+      editHistoryKb = combo
+    } else {
+      editClipboardKb = combo
+    }
     saveKeybinds()
   }
-  function kbRemove(combo) {
-    editKeybinds = editKeybinds.filter(function (c) { return c !== combo })
+  function kbRemove(action, combo) {
+    if (action === "toggle")
+      editKeybinds = editKeybinds.filter(function (c) { return c !== combo })
+    else if (action === "history") editHistoryKb = ""
+    else editClipboardKb = ""
     saveKeybinds()
   }
   function kbReset() {
     editKeybinds = [defaultChord]
+    editHistoryKb = "SUPER + SHIFT + Z"
+    editClipboardKb = "SUPER + V"
     saveKeybinds()
   }
   function saveKeybinds() {
     if (!pluginApi || !_loaded) return
     pluginApi.pluginSettings.keybinds = editKeybinds
+    pluginApi.pluginSettings.transcriptHistoryKeybind = editHistoryKb
+    pluginApi.pluginSettings.clipboardHistoryKeybind = editClipboardKb
     pluginApi.saveSettings()
     if (pluginApi.mainInstance) pluginApi.mainInstance.updateConfig()
   }
@@ -164,6 +192,15 @@ ColumnLayout {
     onToggled: (v) => { root.editAppendNewline = v; saveSettings() }
   }
 
+  NToggle {
+    Layout.fillWidth: true
+    label: pluginApi?.tr("settings.live_caption") || "Live Caption"
+    description: pluginApi?.tr("settings.live_caption_desc")
+                 || "Show what's being heard in an overlay while you dictate"
+    checked: root.editShowCaption
+    onToggled: (v) => { root.editShowCaption = v; saveSettings() }
+  }
+
   NDivider { Layout.fillWidth: true }
 
   // ================= KEYBIND =================
@@ -187,10 +224,32 @@ ColumnLayout {
       Layout.fillWidth: true
       Layout.topMargin: Style.marginXS
       label: "Toggle recording"
+      action: "toggle"
+    }
+
+    KeybindRecorder {
+      Layout.fillWidth: true
+      Layout.topMargin: Style.marginXS
+      label: "Transcript history"
+      action: "history"
+    }
+
+    KeybindRecorder {
+      Layout.fillWidth: true
+      Layout.topMargin: Style.marginXS
+      label: "Clipboard history"
+      action: "clipboard"
+    }
+
+    NText {
+      Layout.fillWidth: true; wrapMode: Text.WordWrap
+      text: "History pickers: type to filter, ↑/↓ to choose, Enter pastes into the window " +
+            "you came from. Removing a pill disables that shortcut."
+      pointSize: Style.fontSizeXS; color: Color.mOnSurfaceVariant
     }
 
     NButton {
-      text: "Reset to " + root.defaultChord
+      text: "Reset all shortcuts to defaults"
       outlined: true
       Layout.topMargin: Style.marginXS
       onClicked: root.kbReset()
@@ -205,7 +264,10 @@ ColumnLayout {
   component KeybindRecorder: RowLayout {
     id: rec
     property string label: ""
-    readonly property bool recording: root.kbRecording === "toggle"
+    property string action: "toggle"   // "toggle" (list) | "history" | "clipboard" (single)
+    readonly property bool recording: root.kbRecording === rec.action
+    readonly property var chords: root.chordsFor(rec.action)
+    readonly property int maxAllowed: rec.action === "toggle" ? root.maxKeybinds : 1
     spacing: Style.marginM
 
     function keyName(key, text) {
@@ -241,13 +303,13 @@ ColumnLayout {
       return parts.join(" + ")
     }
     function startRec() {
-      root.kbRecording = "toggle"
+      root.kbRecording = rec.action
       PanelService.isKeybindRecording = true
       if (root.main) root.main.setCaptureMode(true)
       capture.forceActiveFocus()
     }
     function stopRec() {
-      if (root.kbRecording === "toggle") root.kbRecording = ""
+      if (root.kbRecording === rec.action) root.kbRecording = ""
       PanelService.isKeybindRecording = false
       if (root.main) root.main.setCaptureMode(false)
     }
@@ -261,7 +323,7 @@ ColumnLayout {
       Layout.fillWidth: true
       spacing: Style.marginXS
       Repeater {
-        model: root.editKeybinds
+        model: rec.chords
         delegate: Rectangle {
           radius: height / 2
           color: Color.mSurfaceVariant
@@ -274,13 +336,13 @@ ColumnLayout {
             NText { text: modelData; pointSize: Style.fontSizeS }
             NIconButton {
               icon: "close"; baseSize: Style.baseWidgetSize * 0.55; tooltipText: "Remove"
-              onClicked: root.kbRemove(modelData)
+              onClicked: root.kbRemove(rec.action, modelData)
             }
           }
         }
       }
       Rectangle {
-        visible: rec.recording || root.editKeybinds.length < root.maxKeybinds
+        visible: rec.recording || rec.chords.length < rec.maxAllowed
         radius: height / 2
         color: rec.recording ? Color.mSecondary : "transparent"
         border.color: rec.recording ? Color.mPrimary : Color.mOutline
@@ -318,7 +380,7 @@ ColumnLayout {
             e.accepted = true; return   // wait for a real key
           }
           var combo = rec.comboFromEvent(e)
-          if (combo) { root.kbAdd(combo); rec.stopRec() }
+          if (combo) { root.kbAdd(rec.action, combo); rec.stopRec() }
           e.accepted = true
         }
       }

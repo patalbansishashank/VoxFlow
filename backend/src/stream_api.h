@@ -67,10 +67,14 @@ private:
     int sample_rate_ = 16000;
     TranscriptCallback callback_;
 
+    // Soniox: transcript_ accumulates ONLY is_final tokens (finals are append-only and
+    // never revised); tail_text_ is the still-revisable non-final tail from the latest
+    // message (replaced wholesale each message). The old time-watermark dedup dropped
+    // the flush-corrected finals of the last words — the "endings cut off" bug.
     std::string transcript_;
-    std::string latest_text_;
+    std::string tail_text_;
+    std::string latest_text_;   // transcript_ + tail_text_ — the live preview
     std::string server_error_;
-    uint64_t latest_end_ms_ = 0;
     // Soniox marks utterance boundaries with an "<end>" control token; the next
     // utterance's first token has no leading space, so naive concatenation glues
     // words ("...copy." + "Hmm" -> "copy.Hmm"). Set when we skip "<end>", consumed

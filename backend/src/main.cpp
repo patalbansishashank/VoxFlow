@@ -5,6 +5,7 @@
 #include "stream_api.h"
 #include "hypr.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -179,6 +180,12 @@ static void stop_recording(int64_t id) {
         write_output(make_error(id, -1, "Not recording") + "\n");
         return;
     }
+
+    // Grace period: users hit the stop chord the instant they finish talking, but the
+    // last words are still in the mic pipeline / on the wire. Keep capturing briefly so
+    // the tail reaches the server — it overlaps with finalization, so the perceived
+    // extra latency is well under the 300ms.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
     std::vector<uint8_t> wav = capture.stop();
 

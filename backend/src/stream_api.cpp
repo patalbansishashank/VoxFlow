@@ -73,9 +73,10 @@ bool WebSocketStream::open(const std::string& provider,
     sample_rate_ = sample_rate;
     callback_ = std::move(cb);
     transcript_.clear();
+    tail_text_.clear();
     latest_text_.clear();
     server_error_.clear();
-    latest_end_ms_ = 0;
+    utterance_boundary_ = false;
     finished_ = false;
     stopping_ = false;
     flush_sent_ = false;
@@ -234,6 +235,9 @@ StreamResult WebSocketStream::close() {
 
     {
         std::lock_guard<std::mutex> lock(result_mutex_);
+        // If the wait timed out before "finished" arrived, the preview (finals + tail)
+        // is still better than reporting nothing.
+        if (transcript_.empty() && !latest_text_.empty()) transcript_ = latest_text_;
         if (!transcript_.empty()) {
             result.success = true;
             result.text = transcript_;
@@ -327,7 +331,9 @@ void WebSocketStream::ws_thread_fn() {
                             {
                                 std::lock_guard<std::mutex> lock(result_mutex_);
                                 server_error_ = j.value("error_message", "Unknown server error");
-                                if (transcript_.empty() && !latest_text_.empty()) {
+                                // Salvage whatever we heard before the error.
+                                if (!latest_text_.empty() &&
+                                    latest_text_.length() > transcript_.length()) {
                                     transcript_ = latest_text_;
                                 }
                             }
@@ -337,65 +343,79 @@ void WebSocketStream::ws_thread_fn() {
                         }
 
                         if (j.contains("tokens")) {
-                            std::string full;
-                            bool full_boundary = false;
-                            // True when the segment glues onto the accumulator: it already
-                            // starts with whitespace, or with punctuation that binds to the
-                            // previous word (so no space is wanted).
+                            // Soniox semantics: is_final tokens are append-only (never
+                            // revised); non-final tokens are a *revisable tail* re-sent in
+                            // full each message. Accumulate finals into transcript_ and
+                            // replace tail_text_ wholesale — no time-based dedup. (The old
+                            // start_ms watermark advanced past interim tokens and then
+                            // dropped their corrected finals after flush, which is what cut
+                            // off the last words of a dictation.)
+                            //
+                            // binds_left: segment glues onto the accumulator — it starts
+                            // with whitespace, or punctuation that binds to the previous
+                            // word (so no inserted space is wanted).
                             auto binds_left = [](const std::string& s) {
                                 unsigned char c = static_cast<unsigned char>(s.front());
                                 return std::isspace(c) ||
                                        std::strchr(".,!?;:)]}", c) != nullptr;
                             };
+                            std::string tail;
+                            bool tail_boundary = false;
                             for (auto& tok : j["tokens"]) {
-                                if (tok.contains("text")) {
-                                    std::string text = tok["text"].get<std::string>();
-                                    bool is_final = tok.value("is_final", false);
+                                if (!tok.contains("text")) continue;
+                                std::string text = tok["text"].get<std::string>();
+                                bool is_final = tok.value("is_final", false);
 
-                                    // Skip Soniox control tokens, but remember the utterance
-                                    // boundary: the next utterance's first token carries no
-                                    // leading space and would otherwise glue onto the
-                                    // previous word ("...copy." + "Hmm" -> "copy.Hmm").
-                                    if (text == "<end>") {
-                                        utterance_boundary_ = true;
-                                        full_boundary = true;
-                                        continue;
-                                    }
-                                    if (text.empty()) continue;
+                                // Skip Soniox control tokens, but remember the utterance
+                                // boundary: the next utterance's first token carries no
+                                // leading space and would otherwise glue onto the previous
+                                // word ("...copy." + "Hmm" -> "copy.Hmm").
+                                if (text == "<end>") {
+                                    utterance_boundary_ = true;
+                                    tail_boundary = true;
+                                    continue;
+                                }
+                                if (text.empty()) continue;
 
-                                    if (full_boundary && !full.empty() && !binds_left(text)) {
-                                        full += ' ';
+                                if (is_final) {
+                                    std::lock_guard<std::mutex> lock(result_mutex_);
+                                    if (utterance_boundary_ && !transcript_.empty() &&
+                                        !binds_left(text)) {
+                                        transcript_ += ' ';
                                     }
-                                    full += text;
-                                    full_boundary = false;
-
-                                    // Append NEW tokens (beyond latest_end_ms_) directly
-                                    uint64_t start_ms = tok.value("start_ms", UINT64_MAX);
-                                    uint64_t end_ms = tok.value("end_ms", 0);
-                                    if (start_ms >= latest_end_ms_ && start_ms != UINT64_MAX) {
-                                        std::lock_guard<std::mutex> lock(result_mutex_);
-                                        if (utterance_boundary_ && !transcript_.empty() &&
-                                            !binds_left(text)) {
-                                            transcript_ += ' ';
-                                        }
-                                        transcript_ += text;
-                                        utterance_boundary_ = false;
-                                    }
-                                    if (end_ms > latest_end_ms_) {
-                                        latest_end_ms_ = end_ms;
-                                    }
-
-                                    if (callback_) {
-                                        TranscriptSegment seg;
-                                        seg.text = text;
-                                        seg.is_final = is_final;
-                                        callback_(seg);
-                                    }
+                                    transcript_ += text;
+                                    utterance_boundary_ = false;
+                                } else {
+                                    if (tail_boundary && !tail.empty() && !binds_left(text))
+                                        tail += ' ';
+                                    tail += text;
+                                    tail_boundary = false;
                                 }
                             }
-                            if (!full.empty()) {
+
+                            // Live preview = confirmed finals + current tail.
+                            std::string preview;
+                            {
                                 std::lock_guard<std::mutex> lock(result_mutex_);
-                                latest_text_ = full;
+                                tail_text_ = tail;
+                                preview = transcript_;
+                                if (!tail.empty()) {
+                                    if (!preview.empty() &&
+                                        !std::isspace(static_cast<unsigned char>(
+                                            preview.back())) &&
+                                        !binds_left(tail)) {
+                                        preview += ' ';
+                                    }
+                                    preview += tail;
+                                }
+                                latest_text_ = preview;
+                            }
+                            if (callback_) {
+                                // Full running text, not a fragment — feeds the live caption.
+                                TranscriptSegment seg;
+                                seg.text = preview;
+                                seg.is_final = false;
+                                callback_(seg);
                             }
                         }
 
@@ -405,9 +425,13 @@ void WebSocketStream::ws_thread_fn() {
                                 std::lock_guard<std::mutex> lock(result_mutex_);
                                 debug_log("[DEBUG] finished handler: transcript_='%s' latest_text_='%s'\n",
                                           transcript_.c_str(), latest_text_.c_str());
-                                if (transcript_.empty() && !latest_text_.empty()) {
+                                // Anything still non-final at finish (rare — the close
+                                // frame finalizes everything) is better kept than lost:
+                                // latest_text_ is finals + tail, exactly what we want.
+                                if (!latest_text_.empty() &&
+                                    latest_text_.length() > transcript_.length()) {
                                     transcript_ = latest_text_;
-                                    debug_log("[DEBUG] Copied latest_text_ to transcript_ -> '%s'\n",
+                                    debug_log("[DEBUG] Kept tail: transcript_ -> '%s'\n",
                                               transcript_.c_str());
                                 }
                             }
@@ -423,6 +447,7 @@ void WebSocketStream::ws_thread_fn() {
                             if (data.contains("transcript")) {
                                 std::string text = data["transcript"].get<std::string>();
                                 if (!text.empty()) {
+                                    std::string preview;
                                     {
                                         std::lock_guard<std::mutex> lock(result_mutex_);
                                         // Sarvam sends utterance-level chunks with no
@@ -438,11 +463,14 @@ void WebSocketStream::ws_thread_fn() {
                                             transcript_ += ' ';
                                         }
                                         transcript_ += text;
+                                        latest_text_ = transcript_;
+                                        preview = transcript_;
                                     }
                                     if (callback_) {
+                                        // Full running text — feeds the live caption.
                                         TranscriptSegment seg;
-                                        seg.text = text;
-                                        seg.is_final = true;
+                                        seg.text = preview;
+                                        seg.is_final = false;
                                         callback_(seg);
                                     }
                                     if (flush_sent_.load()) {
