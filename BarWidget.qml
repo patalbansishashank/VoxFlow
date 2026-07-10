@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Shapes
 import Quickshell
 import qs.Commons
 import qs.Widgets
@@ -64,6 +63,16 @@ Item {
     }
   }
 
+  // Rhythmic pulse that drives the concentric rings while transcribing — same visual as
+  // the recording rings, but self-driven (no audio) so it reads as the "working" state.
+  property real pulseDrive: 0.0
+  SequentialAnimation on pulseDrive {
+    running: isProcessing
+    loops: Animation.Infinite
+    NumberAnimation { from: 0.12; to: 0.78; duration: 650; easing.type: Easing.InOutSine }
+    NumberAnimation { from: 0.78; to: 0.12; duration: 650; easing.type: Easing.InOutSine }
+  }
+
   Rectangle {
     id: visualCapsule
     x: Style.pixelAlignCenter(parent.width, width)
@@ -94,63 +103,28 @@ Item {
       anchors.fill: parent
       clip: true
 
+      // Concentric rings for both live states: while RECORDING they pulse with your voice
+      // (displayLevel, on-error colour); while TRANSCRIBING they pulse to a steady rhythm
+      // (pulseDrive, on-primary colour). Same visual language, high-contrast per state.
       Repeater {
         model: 4
         Rectangle {
+          readonly property real drive: isRecording ? displayLevel
+                                       : (isProcessing ? root.pulseDrive : 0.0)
+          readonly property color ring: isRecording ? Color.mOnError : Color.mOnPrimary
           x: (parent.width - width) / 2
           y: (parent.height - height) / 2
           width: iconSize
           height: iconSize
           radius: width / 2
           color: "transparent"
-          border.color: Qt.rgba(Color.mOnError.r, Color.mOnError.g, Color.mOnError.b, 0.55 - index * 0.1)
+          border.color: Qt.rgba(ring.r, ring.g, ring.b, 0.6 - index * 0.1)
           border.width: Math.max(1.5, capsuleHeight * 0.045)
-          opacity: isRecording ? (0.18 + displayLevel * (0.55 - index * 0.1)) : 0
-          scale: isRecording ? (1.0 + displayLevel * (3.0 - index * 0.4)) : 1.0
+          opacity: (isRecording || isProcessing) ? (0.18 + drive * (0.6 - index * 0.1)) : 0
+          scale: (isRecording || isProcessing) ? (1.0 + drive * (3.0 - index * 0.4)) : 1.0
 
           Behavior on scale { NumberAnimation { duration: 60 + index * 40 } }
           Behavior on opacity { NumberAnimation { duration: 60 + index * 40 } }
-        }
-      }
-
-      // Indeterminate "transcribing" spinner. A sweeping ARC, not a full ring — a full
-      // ring rotating is visually static (that's why the old spinners just read as a flat
-      // colour). This clearly rotates, so it's unmistakably "working".
-      Shape {
-        id: procSpinner
-        anchors.centerIn: parent
-        width: iconSize * 1.7
-        height: width
-        antialiasing: true
-        opacity: isProcessing ? 1.0 : 0
-        visible: opacity > 0
-
-        readonly property real stroke: Math.max(2, capsuleHeight * 0.06)
-
-        Behavior on opacity { NumberAnimation { duration: 250 } }
-
-        ShapePath {
-          strokeColor: colorProcess
-          fillColor: "transparent"
-          strokeWidth: procSpinner.stroke
-          capStyle: ShapePath.RoundCap
-          PathAngleArc {
-            centerX: procSpinner.width / 2
-            centerY: procSpinner.height / 2
-            radiusX: procSpinner.width / 2 - procSpinner.stroke
-            radiusY: procSpinner.height / 2 - procSpinner.stroke
-            startAngle: 0
-            sweepAngle: 290
-            moveToStart: true
-          }
-        }
-
-        RotationAnimator on rotation {
-          running: isProcessing
-          loops: Animation.Infinite
-          from: 0
-          to: 360
-          duration: 900
         }
       }
 
@@ -160,21 +134,11 @@ Item {
         icon: "microphone"
         color: {
           if (isRecording) return "#ffffff"
-          if (isProcessing) return Qt.lighter(colorProcess, 1.5)
+          if (isProcessing) return Color.mOnPrimary   // high contrast on the primary capsule
           return Color.mOnSurface
         }
-        // Gentle breathing while transcribing, so even the icon shows life.
         pointSize: iconSize * 0.8
-        opacity: isProcessing ? 0.75 : 1.0
-        scale: isProcessing ? procPulse : 1.0
-        property real procPulse: 1.0
-
-        SequentialAnimation on procPulse {
-          running: isProcessing
-          loops: Animation.Infinite
-          NumberAnimation { from: 0.88; to: 1.06; duration: 550; easing.type: Easing.InOutSine }
-          NumberAnimation { from: 1.06; to: 0.88; duration: 550; easing.type: Easing.InOutSine }
-        }
+        opacity: 1.0
 
         Behavior on color { ColorAnimation { duration: 250 } }
         Behavior on opacity { NumberAnimation { duration: 250 } }
