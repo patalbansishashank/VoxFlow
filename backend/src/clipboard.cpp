@@ -1,11 +1,14 @@
 #include "clipboard.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <chrono>
 #include <array>
 #include <algorithm>
+#include <vector>
+#include <unistd.h>
 
 static bool run_command(const char* cmd) {
     int ret = std::system(cmd);
@@ -74,13 +77,37 @@ bool Clipboard::paste_via_wtype() {
         "wtype -s 90 -M ctrl -s 24 -P v -s 24 -p v -s 24 -m ctrl 2>/dev/null");
 }
 
+// Locate a running ydotoold socket, if any. ydotool injects input at the kernel
+// (uinput) level, which native-Wayland Chromium/Electron accept — where wtype's
+// virtual-keyboard keystrokes are silently dropped. Empty string => not running.
+static std::string ydotool_socket() {
+    if (const char* env = std::getenv("YDOTOOL_SOCKET"))
+        if (env[0] && access(env, F_OK) == 0) return env;
+    const char* rt = std::getenv("XDG_RUNTIME_DIR");
+    std::vector<std::string> candidates = {"/run/ydotoold.sock"};
+    if (rt && rt[0]) candidates.push_back(std::string(rt) + "/.ydotool_socket");
+    candidates.push_back("/run/user/1000/.ydotool_socket");
+    candidates.push_back("/tmp/.ydotool_socket");
+    for (const auto& p : candidates)
+        if (access(p.c_str(), F_OK) == 0) return p;
+    return "";
+}
+
 bool Clipboard::paste_via_ydotool() {
-    return run_command("ydotool key 29:1 47:1 47:0 29:0 2>/dev/null");
+    const std::string sock = ydotool_socket();
+    if (sock.empty()) return false;  // no daemon -> let paste() fall back to wtype
+    // 29 = KEY_LEFTCTRL, 47 = KEY_V: press ctrl, press v, release v, release ctrl.
+    const std::string cmd =
+        "YDOTOOL_SOCKET=" + sock + " ydotool key 29:1 47:1 47:0 29:0 2>/dev/null";
+    return run_command(cmd.c_str());
 }
 
 bool Clipboard::paste() {
-    if (paste_via_wtype()) return true;
+    // Prefer ydotool: kernel-level input that Chromium/Electron accept. Fall back to
+    // wtype (Wayland virtual keyboard) when ydotoold isn't installed/running — that
+    // still works for lenient native-Wayland apps (terminals, most GTK/Qt).
     if (paste_via_ydotool()) return true;
+    if (paste_via_wtype()) return true;
     return false;
 }
 
