@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstring>
+#include <cctype>
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
@@ -337,22 +338,48 @@ void WebSocketStream::ws_thread_fn() {
 
                         if (j.contains("tokens")) {
                             std::string full;
+                            bool full_boundary = false;
+                            // True when the segment glues onto the accumulator: it already
+                            // starts with whitespace, or with punctuation that binds to the
+                            // previous word (so no space is wanted).
+                            auto binds_left = [](const std::string& s) {
+                                unsigned char c = static_cast<unsigned char>(s.front());
+                                return std::isspace(c) ||
+                                       std::strchr(".,!?;:)]}", c) != nullptr;
+                            };
                             for (auto& tok : j["tokens"]) {
                                 if (tok.contains("text")) {
                                     std::string text = tok["text"].get<std::string>();
                                     bool is_final = tok.value("is_final", false);
 
-                                    // Skip Soniox control tokens
-                                    if (text == "<end>") continue;
+                                    // Skip Soniox control tokens, but remember the utterance
+                                    // boundary: the next utterance's first token carries no
+                                    // leading space and would otherwise glue onto the
+                                    // previous word ("...copy." + "Hmm" -> "copy.Hmm").
+                                    if (text == "<end>") {
+                                        utterance_boundary_ = true;
+                                        full_boundary = true;
+                                        continue;
+                                    }
+                                    if (text.empty()) continue;
 
+                                    if (full_boundary && !full.empty() && !binds_left(text)) {
+                                        full += ' ';
+                                    }
                                     full += text;
+                                    full_boundary = false;
 
                                     // Append NEW tokens (beyond latest_end_ms_) directly
                                     uint64_t start_ms = tok.value("start_ms", UINT64_MAX);
                                     uint64_t end_ms = tok.value("end_ms", 0);
                                     if (start_ms >= latest_end_ms_ && start_ms != UINT64_MAX) {
                                         std::lock_guard<std::mutex> lock(result_mutex_);
+                                        if (utterance_boundary_ && !transcript_.empty() &&
+                                            !binds_left(text)) {
+                                            transcript_ += ' ';
+                                        }
                                         transcript_ += text;
+                                        utterance_boundary_ = false;
                                     }
                                     if (end_ms > latest_end_ms_) {
                                         latest_end_ms_ = end_ms;
@@ -398,6 +425,18 @@ void WebSocketStream::ws_thread_fn() {
                                 if (!text.empty()) {
                                     {
                                         std::lock_guard<std::mutex> lock(result_mutex_);
+                                        // Sarvam sends utterance-level chunks with no
+                                        // separator between them — join with a space
+                                        // unless the chunk binds to the previous one.
+                                        unsigned char first =
+                                            static_cast<unsigned char>(text.front());
+                                        if (!transcript_.empty() &&
+                                            !std::isspace(static_cast<unsigned char>(
+                                                transcript_.back())) &&
+                                            !std::isspace(first) &&
+                                            std::strchr(".,!?;:)]}", first) == nullptr) {
+                                            transcript_ += ' ';
+                                        }
                                         transcript_ += text;
                                     }
                                     if (callback_) {

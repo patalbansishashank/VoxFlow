@@ -121,53 +121,20 @@ bool Clipboard::restore(const ClipSaved& previous) {
 }
 
 bool Clipboard::paste_via_wtype() {
-    // Native-Wayland Chromium/Electron are strict about wtype's synthetic input: they
-    // drop the Ctrl+V when the freshly-created virtual keyboard's keymap isn't active
-    // yet, or when Ctrl and V arrive in the same instant. Lenient apps (Alacritty)
-    // tolerate the fast path, which is why the terminal pasted but the browser didn't.
-    // Settle after the keyboard is created (-s 90), then hold Ctrl with small gaps
-    // around an explicit press/release of V so the modifier is reliably applied.
+    // Only used off Hyprland (e.g. Niri). wtype's virtual keyboard works in lenient
+    // apps (terminals, most GTK/Qt) but native-Wayland Chromium/Electron silently drop
+    // it — on Hyprland we never get here because send_ctrl_v() handles everything.
     return run_command(
         "wtype -s 90 -M ctrl -s 24 -P v -s 24 -p v -s 24 -m ctrl 2>/dev/null");
 }
 
-// Locate a running ydotoold socket, if any. ydotool injects input at the kernel
-// (uinput) level, which native-Wayland Chromium/Electron accept — where wtype's
-// virtual-keyboard keystrokes are silently dropped. Empty string => not running.
-static std::string ydotool_socket() {
-    if (const char* env = std::getenv("YDOTOOL_SOCKET"))
-        if (env[0] && access(env, F_OK) == 0) return env;
-    const char* rt = std::getenv("XDG_RUNTIME_DIR");
-    std::vector<std::string> candidates = {"/run/ydotoold.sock"};
-    if (rt && rt[0]) candidates.push_back(std::string(rt) + "/.ydotool_socket");
-    candidates.push_back("/run/user/1000/.ydotool_socket");
-    candidates.push_back("/tmp/.ydotool_socket");
-    for (const auto& p : candidates)
-        if (access(p.c_str(), F_OK) == 0) return p;
-    return "";
-}
-
-bool Clipboard::paste_via_ydotool() {
-    const std::string sock = ydotool_socket();
-    if (sock.empty()) return false;  // no daemon -> let paste() fall back to wtype
-    // 29 = KEY_LEFTCTRL, 47 = KEY_V: press ctrl, press v, release v, release ctrl.
-    const std::string cmd =
-        "YDOTOOL_SOCKET=" + sock + " ydotool key 29:1 47:1 47:0 29:0 2>/dev/null";
-    return run_command(cmd.c_str());
-}
-
 bool Clipboard::paste() {
-    // Injection preference, most- to least-compatible:
-    //  1. Hyprland send_shortcut — the compositor synthesizes Ctrl+V on the real seat,
-    //     indistinguishable from the physical keyboard; Chromium/Electron accept it
-    //     (verified live). No root, no extra daemon.
-    //  2. ydotool — kernel-level uinput, also universally accepted, but needs ydotoold.
-    //  3. wtype — Wayland virtual keyboard; lenient apps only (terminals, most GTK/Qt);
-    //     native-Wayland Chromium/Electron silently drop it.
-    if (hypr::send_ctrl_v()) return true;
-    if (paste_via_ydotool()) return true;
-    if (paste_via_wtype()) return true;
-    return false;
+    // On Hyprland the compositor synthesizes Ctrl+V on the real seat
+    // (hl.dsp.send_shortcut) — indistinguishable from the physical keyboard, accepted
+    // by every app (verified live in Chromium). That is the whole paste story here;
+    // wtype only exists as the fallback for other compositors.
+    if (hypr::available()) return hypr::send_ctrl_v();
+    return paste_via_wtype();
 }
 
 bool Clipboard::copy_and_paste(const std::string& text, bool append_newline) {

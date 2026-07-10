@@ -7,3 +7,4 @@ bin/
 # User data written by Noctalia at runtime — holds API keys, never commit
 settings.json
 __pycache__/
+transcripts.jsonl

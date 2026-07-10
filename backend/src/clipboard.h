@@ -29,5 +29,4 @@ public:
 
 private:
     bool paste_via_wtype();
-    bool paste_via_ydotool();
 };

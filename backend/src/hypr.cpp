@@ -11,9 +11,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-namespace {
-// The command a bound chord runs: toggle VoxFlow recording via Noctalia's plugin IPC.
-const char* kToggleCmd = "qs -c noctalia-shell ipc call plugin:voxflow toggleRecording";
+std::string hypr::plugin_cmd(const std::string& method) {
+    return "qs -c noctalia-shell ipc call plugin:voxflow " + method;
 }
 
 std::string hypr::socket_path() {
@@ -71,9 +70,9 @@ bool hypr::send_ctrl_v() {
     return reply.rfind("ok", 0) == 0;
 }
 
-void KeybindManager::bind(const std::string& chord) {
-    if (chord.empty()) return;
-    hypr::request("eval hl.bind(\"" + chord + "\", hl.dsp.exec_cmd(\"" + kToggleCmd + "\"))");
+void KeybindManager::bind(const Bind& b) {
+    if (b.chord.empty() || b.cmd.empty()) return;
+    hypr::request("eval hl.bind(\"" + b.chord + "\", hl.dsp.exec_cmd(\"" + b.cmd + "\"))");
 }
 
 void KeybindManager::unbind(const std::string& chord) {
@@ -81,27 +80,27 @@ void KeybindManager::unbind(const std::string& chord) {
     hypr::request("eval hl.unbind(\"" + chord + "\")");
 }
 
-void KeybindManager::reconcile(const std::vector<std::string>& desired, bool initial) {
+void KeybindManager::reconcile(const std::vector<Bind>& desired, bool initial) {
     if (initial) {
         // Clear any duplicate the running Hyprland already has (hyprland.lua bind loaded
         // at login), then assert ours.
-        for (const auto& c : desired) { unbind(c); bind(c); }
+        for (const auto& b : desired) { unbind(b.chord); bind(b); }
         active_ = desired;
         return;
     }
-    for (const auto& c : active_)
-        if (std::find(desired.begin(), desired.end(), c) == desired.end()) unbind(c);
-    for (const auto& c : desired)
-        if (std::find(active_.begin(), active_.end(), c) == active_.end()) bind(c);
+    for (const auto& b : active_)
+        if (std::find(desired.begin(), desired.end(), b) == desired.end()) unbind(b.chord);
+    for (const auto& b : desired)
+        if (std::find(active_.begin(), active_.end(), b) == active_.end()) bind(b);
     active_ = desired;
 }
 
-void KeybindManager::set_capture(bool on, const std::vector<std::string>& desired) {
+void KeybindManager::set_capture(bool on, const std::vector<Bind>& desired) {
     if (on == captured_) return;
     captured_ = on;
     if (on) {
         // Physically suspend every live bind; keep active_ so we know what we had.
-        for (const auto& c : active_) unbind(c);
+        for (const auto& b : active_) unbind(b.chord);
     } else {
         // Everything is physically unbound now — rebind to the (possibly changed) desired set.
         active_.clear();
@@ -110,7 +109,7 @@ void KeybindManager::set_capture(bool on, const std::vector<std::string>& desire
 }
 
 void KeybindManager::clear() {
-    for (const auto& c : active_) unbind(c);
+    for (const auto& b : active_) unbind(b.chord);
     active_.clear();
 }
 

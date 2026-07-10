@@ -93,12 +93,24 @@ The bar disappears for ~2–5 s; that's expected. The user normally starts Nocta
 Hyprland autostart, so this transient unit is only for the test cycle. **Restarting the shell
 is the #1 footgun on this machine — prefer to avoid it unless you actually need to test QML.**
 
-## Keybind — plugin-managed (like HyperZone)
+## Keybinds — plugin-managed (like HyperZone)
 
-The toggle shortcut is **owned by the plugin**, editable in the settings pane's "Keyboard
-Shortcut" section (a `KeybindRecorder` ported from HyperZone). Chords are stored in plugin
-`settings.json` (`keybinds: ["SUPER + Z"]`); the **C++ backend** registers them live in Hyprland.
-It is NOT hand-written in hyprland.lua anymore.
+All VoxFlow shortcuts are **owned by the plugin** and registered live in Hyprland by the
+**C++ backend** — nothing is hand-written in hyprland.lua:
+
+| Chord (default) | settings.json key | Action |
+|---|---|---|
+| `SUPER + Z` | `keybinds` (list, recorder UI in Settings) | toggle recording |
+| `SUPER + SHIFT + Z` | `transcriptHistoryKeybind` | transcript-history picker |
+| `SUPER + V` | `clipboardHistoryKeybind` | clipboard-history picker (cliphist, transcripts filtered out) |
+
+The pickers are `HistoryPanel.qml` (overlay PanelWindow, launcher-style: type-to-filter,
+arrows, Enter pastes into the previously focused window). Transcripts are recorded by the
+backend to `<pluginDir>/transcripts.jsonl` (user data, git-ignored, capped ~200 entries);
+RPC surface: `get_history`, `paste_text` (full copy→paste→restore flow), `send_paste`
+(compositor Ctrl+V only — used after `cliphist decode | wl-copy`). Set a history chord to
+`""` in settings.json to disable it. The two picker chords have no recorder UI yet — edit
+settings.json directly.
 
 How it works (all in `backend/src/hypr.{h,cpp}` + wired in `main.cpp`):
 - The bound chord runs `qs -c noctalia-shell ipc call plugin:voxflow toggleRecording`.

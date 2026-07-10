@@ -19,9 +19,19 @@ namespace hypr {
     // Unlike wtype's virtual-keyboard events — which native-Wayland Chromium/Electron
     // silently drop — input synthesized by the compositor itself is indistinguishable
     // from the real keyboard, so every app accepts it. Returns false off Hyprland or
-    // on a non-"ok" reply (caller falls back to ydotool/wtype).
+    // on a non-"ok" reply (caller falls back to wtype).
     bool send_ctrl_v();
+    // Shell command that invokes a VoxFlow plugin IPC method (toggleRecording,
+    // showTranscriptHistory, ...) — what a bound chord executes.
+    std::string plugin_cmd(const std::string& method);
 }
+
+// A live Hyprland keybind: pressing `chord` runs `cmd`.
+struct Bind {
+    std::string chord;
+    std::string cmd;
+    bool operator==(const Bind&) const = default;
+};
 
 // Owns VoxFlow's Hyprland keybinds. The plugin — not hyprland.lua — is the source of
 // truth: chords live in the plugin's settings.json and the backend registers them live.
@@ -30,11 +40,11 @@ public:
     // Reconcile the live binds to `desired`. On the first call (initial=true) each chord
     // is unbound-then-bound to clear any duplicate already loaded in the running Hyprland
     // (e.g. a hand-written hyprland.lua bind still active from login).
-    void reconcile(const std::vector<std::string>& desired, bool initial);
+    void reconcile(const std::vector<Bind>& desired, bool initial);
     // Suspend (on=true) / restore (on=false) all live binds while the settings UI records
     // a new chord, so pressing an already-bound chord reaches the recorder instead of
     // firing the toggle. On restore, binds are reconciled to `desired`.
-    void set_capture(bool on, const std::vector<std::string>& desired);
+    void set_capture(bool on, const std::vector<Bind>& desired);
     bool is_capturing() const { return captured_; }
     // Comment out any hand-written `hl.bind(... plugin:voxflow ...)` line in
     // ~/.config/hypr/hyprland.lua (a one-time backup is kept) so the plugin fully owns
@@ -44,8 +54,8 @@ public:
     void clear();
 
 private:
-    void bind(const std::string& chord);
+    void bind(const Bind& b);
     void unbind(const std::string& chord);
-    std::vector<std::string> active_;
+    std::vector<Bind> active_;
     bool captured_ = false;
 };

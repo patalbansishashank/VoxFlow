@@ -16,6 +16,10 @@ struct AppConfig {
     // Chords that toggle recording, in Hyprland form (e.g. "SUPER + Z"). The plugin
     // (not hyprland.lua) owns these — the backend registers them live via hl.bind.
     std::vector<std::string> keybinds = {"SUPER + Z"};
+    // Picker chords (empty string = disabled): past transcripts, and general clipboard
+    // history with transcripts filtered out. Also plugin-owned, registered live.
+    std::string transcript_history_keybind = "SUPER + SHIFT + Z";
+    std::string clipboard_history_keybind = "SUPER + V";
 
     void from_json(const json& j) {
         soniox_api_key = j.value("soniox_api_key", soniox_api_key);
@@ -31,6 +35,10 @@ struct AppConfig {
             for (const auto& k : j["keybinds"])
                 if (k.is_string()) keybinds.push_back(k.get<std::string>());
         }
+        transcript_history_keybind =
+            j.value("transcript_history_keybind", transcript_history_keybind);
+        clipboard_history_keybind =
+            j.value("clipboard_history_keybind", clipboard_history_keybind);
     }
 
     json to_json() const {
@@ -41,7 +49,9 @@ struct AppConfig {
             {"language", language},
             {"sample_rate", sample_rate},
             {"append_newline", append_newline},
-            {"keybinds", keybinds}
+            {"keybinds", keybinds},
+            {"transcript_history_keybind", transcript_history_keybind},
+            {"clipboard_history_keybind", clipboard_history_keybind}
         };
     }
 };

@@ -71,7 +71,11 @@ Item {
         append_newline: pluginApi.pluginSettings?.appendNewline ?? true,
         // Chords the backend registers in Hyprland (hl.bind). The plugin owns these,
         // not hyprland.lua. See Settings.qml keybind recorder.
-        keybinds: pluginApi.pluginSettings?.keybinds ?? ["SUPER + Z"]
+        keybinds: pluginApi.pluginSettings?.keybinds ?? ["SUPER + Z"],
+        transcript_history_keybind:
+          pluginApi.pluginSettings?.transcriptHistoryKeybind ?? "SUPER + SHIFT + Z",
+        clipboard_history_keybind:
+          pluginApi.pluginSettings?.clipboardHistoryKeybind ?? "SUPER + V"
       }
     }
     backend.write(JSON.stringify(cfg) + "\n")
@@ -84,12 +88,58 @@ Item {
     backend.write(JSON.stringify({ method: "set_capture_mode", params: { on: on } }) + "\n")
   }
 
+  // ── history pickers ─────────────────────────────────────────────────────────
+  // Two plugin-owned chords open an overlay picker (HistoryPanel.qml): past
+  // transcripts, or general clipboard history (cliphist) with transcripts filtered
+  // out. Both flows fetch the transcript list from the backend first (the clipboard
+  // picker needs it for filtering), then open the panel.
+
+  property bool historyOpen: false
+  property string historyMode: "transcripts"
+  property var historyItems: []
+
+  function showTranscriptHistory() { requestHistory("transcripts") }
+  function showClipboardHistory() { requestHistory("clipboard") }
+
+  function requestHistory(mode) {
+    if (root.historyOpen) { root.historyOpen = false; return }  // same chord closes it
+    root.historyMode = mode
+    backend.write('{"id":2,"method":"get_history","params":{"limit":100}}\n')
+  }
+
+  // Paste a picked transcript: full backend flow (clipboard saved, compositor
+  // Ctrl+V, clipboard restored).
+  function pasteText(text) {
+    backend.write(JSON.stringify({ method: "paste_text", params: { text: text } }) + "\n")
+  }
+
+  // The clipboard picker already wl-copy'd the chosen item; give the panel a beat
+  // to close and focus to return to the previous window, then send Ctrl+V.
+  function sendPasteSoon() { pasteDelay.restart() }
+  Timer {
+    id: pasteDelay
+    interval: 300
+    onTriggered: backend.write('{"method":"send_paste","params":{}}\n')
+  }
+
+  Loader {
+    active: root.historyOpen
+    sourceComponent: HistoryPanel {
+      main: root
+      mode: root.historyMode
+      transcripts: root.historyItems
+      onDismissed: root.historyOpen = false
+    }
+  }
+
   IpcHandler {
     target: "plugin:voxflow"
 
     function startRecording() { root.startRecording() }
     function stopRecording() { root.stopRecording() }
     function toggleRecording() { root.toggleRecording() }
+    function showTranscriptHistory() { root.showTranscriptHistory() }
+    function showClipboardHistory() { root.showClipboardHistory() }
   }
 
   Process {
@@ -200,6 +250,13 @@ Item {
       root.resetProcessing()
       lastError = msg.error.message || "Transcription failed"
       ToastService.showError("VoxFlow", lastError)
+      return
+    }
+
+    // History list arrived -> open the picker.
+    if (msg.id === 2 && msg.result) {
+      root.historyItems = msg.result.items || []
+      root.historyOpen = true
       return
     }
   }

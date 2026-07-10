@@ -71,6 +71,11 @@ private:
     std::string latest_text_;
     std::string server_error_;
     uint64_t latest_end_ms_ = 0;
+    // Soniox marks utterance boundaries with an "<end>" control token; the next
+    // utterance's first token has no leading space, so naive concatenation glues
+    // words ("...copy." + "Hmm" -> "copy.Hmm"). Set when we skip "<end>", consumed
+    // by the next transcript_ append to insert the missing space.
+    bool utterance_boundary_ = false;
     std::mutex result_mutex_;
     std::condition_variable result_cv_;
     std::atomic<bool> finished_{false};

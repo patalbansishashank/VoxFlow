@@ -19,7 +19,9 @@
       "provider": "soniox",
       "language": "en-IN",
       "appendNewline": true,
-      "keybinds": ["SUPER + Z"]
+      "keybinds": ["SUPER + Z"],
+      "transcriptHistoryKeybind": "SUPER + SHIFT + Z",
+      "clipboardHistoryKeybind": "SUPER + V"
     }
   }
 }

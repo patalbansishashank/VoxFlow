@@ -84,6 +84,18 @@ want (default **Super + Z**). VoxFlow registers it for you — no config-file ed
 
 It's a single toggle — press to start recording, press again to stop and transcribe.
 
+### History pickers (Hyprland)
+
+Two more plugin-managed shortcuts open an overlay picker (type to filter, arrow keys,
+Enter pastes into the window you came from):
+
+- **Super + Shift + Z** — your past transcripts (recorded locally, never uploaded)
+- **Super + V** — general clipboard history via `cliphist` (transcripts filtered out;
+  needs `cliphist` + a `wl-paste --watch cliphist store` watcher, which Noctalia runs)
+
+Change the chords via `transcriptHistoryKeybind` / `clipboardHistoryKeybind` in the
+plugin's `settings.json` (empty string disables).
+
 ### Language
 
 Set the language code in Settings (e.g. `en-IN`, `hi-IN`, `en-US`). Soniox uses `language_hints_strict` so only the specified language is transcribed (prevents Devanagari/Bengali script output).

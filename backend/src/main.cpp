@@ -7,12 +7,17 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <memory>
+#include <vector>
+
+#include <unistd.h>
 
 static std::atomic<bool> running{true};
 static std::mutex cout_mutex;
@@ -27,6 +32,87 @@ static void write_output(const std::string& line) {
     std::lock_guard<std::mutex> lock(cout_mutex);
     std::cout << line;
     std::cout.flush();
+}
+
+// ── transcript history ────────────────────────────────────────────────────────
+// Every successful transcription is appended to <pluginDir>/transcripts.jsonl
+// (one {"ts","text"} per line, user data — git-ignored like settings.json). The
+// settings pane's history picker reads it back via the get_history RPC.
+
+static std::string plugin_dir() {
+    // /proc/self/exe -> <pluginDir>/bin/voxflow-backend
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return "";
+    buf[n] = '\0';
+    std::string p(buf);
+    size_t slash = p.rfind('/');           // strip binary name
+    if (slash == std::string::npos) return "";
+    p.resize(slash);
+    slash = p.rfind('/');                  // strip bin/
+    if (slash == std::string::npos) return "";
+    p.resize(slash);
+    return p;
+}
+
+static std::string history_path() {
+    std::string dir = plugin_dir();
+    return dir.empty() ? "" : dir + "/transcripts.jsonl";
+}
+
+static std::vector<std::string> read_history_lines() {
+    std::vector<std::string> lines;
+    std::ifstream in(history_path());
+    std::string line;
+    while (std::getline(in, line))
+        if (!line.empty()) lines.push_back(line);
+    return lines;
+}
+
+static void append_history(const std::string& text) {
+    if (text.empty()) return;
+    std::string path = history_path();
+    if (path.empty()) return;
+
+    std::vector<std::string> lines = read_history_lines();
+    lines.push_back(json{{"ts", std::time(nullptr)}, {"text", text}}.dump());
+    // Cap the file: once it grows past 300 entries, keep the newest 200.
+    if (lines.size() > 300)
+        lines.erase(lines.begin(), lines.end() - 200);
+
+    std::ofstream out(path + ".tmp", std::ios::trunc);
+    if (!out) return;
+    for (const auto& l : lines) out << l << "\n";
+    out.close();
+    std::rename((path + ".tmp").c_str(), path.c_str());
+}
+
+// Newest first, capped at `limit`.
+static json read_history(size_t limit) {
+    std::vector<std::string> lines = read_history_lines();
+    json items = json::array();
+    for (auto it = lines.rbegin(); it != lines.rend() && items.size() < limit; ++it) {
+        try {
+            json j = json::parse(*it);
+            if (j.contains("text"))
+                items.push_back({{"ts", j.value("ts", 0)}, {"text", j["text"]}});
+        } catch (...) {}
+    }
+    return items;
+}
+
+// The full set of binds the plugin owns: toggle chord(s) + the two history pickers.
+static std::vector<Bind> desired_binds() {
+    std::vector<Bind> binds;
+    for (const auto& chord : config.keybinds)
+        binds.push_back({chord, hypr::plugin_cmd("toggleRecording")});
+    if (!config.transcript_history_keybind.empty())
+        binds.push_back({config.transcript_history_keybind,
+                         hypr::plugin_cmd("showTranscriptHistory")});
+    if (!config.clipboard_history_keybind.empty())
+        binds.push_back({config.clipboard_history_keybind,
+                         hypr::plugin_cmd("showClipboardHistory")});
+    return binds;
 }
 
 static bool start_recording(const json& params) {
@@ -116,6 +202,7 @@ static void stop_recording(int64_t id) {
 
     std::string text = result.text;
 
+    append_history(text);
     clipboard.copy_and_paste(text, config.append_newline);
 
     write_output(make_result(id, {
@@ -126,11 +213,12 @@ static void stop_recording(int64_t id) {
 
 static void handle_config(const json& params) {
     config.from_json(params);
-    // Register the toggle chord(s) live in Hyprland. Skip while the settings UI is
-    // capturing a chord (binds are suspended then; they get reconciled on capture end).
+    // Register the plugin-owned chords live in Hyprland (toggle + history pickers).
+    // Skip while the settings UI is capturing a chord (binds are suspended then; they
+    // get reconciled on capture end).
     if (hypr::available() && !keybinds.is_capturing()) {
         if (first_config) keybinds.migrate_hyprland_config();
-        keybinds.reconcile(config.keybinds, first_config);
+        keybinds.reconcile(desired_binds(), first_config);
         first_config = false;
     }
     write_output(make_event("config_updated", config.to_json()) + "\n");
@@ -154,7 +242,22 @@ static void process_line(const std::string& line) {
     } else if (req.method == "set_capture_mode") {
         // The settings UI toggles this around recording a new chord.
         if (hypr::available())
-            keybinds.set_capture(req.params.value("on", false), config.keybinds);
+            keybinds.set_capture(req.params.value("on", false), desired_binds());
+    } else if (req.method == "get_history") {
+        // Past transcripts, newest first — feeds the history pickers.
+        size_t limit = req.params.value("limit", 100);
+        write_output(make_result(req.id, {{"items", read_history(limit)}}) + "\n");
+    } else if (req.method == "paste_text") {
+        // Paste an old transcript picked from history: same flow as a fresh dictation
+        // (clipboard saved, compositor Ctrl+V, clipboard restored).
+        std::string text = req.params.value("text", "");
+        if (!text.empty()) clipboard.copy_and_paste(text, false);
+        if (req.id) write_output(make_result(req.id, {{"ok", !text.empty()}}) + "\n");
+    } else if (req.method == "send_paste") {
+        // Just the compositor Ctrl+V — the clipboard-history picker has already put
+        // the chosen item on the clipboard (cliphist decode | wl-copy).
+        bool ok = clipboard.paste();
+        if (req.id) write_output(make_result(req.id, {{"ok", ok}}) + "\n");
     } else if (req.method == "ping") {
         write_output(make_result(req.id, {{"pong", true}}) + "\n");
     } else if (req.method == "shutdown") {
