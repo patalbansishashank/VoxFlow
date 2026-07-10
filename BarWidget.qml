@@ -72,7 +72,9 @@ Item {
     color: {
       if (isRecording) return colorRecord
       if (isProcessing) return colorProcess
-      if (lastError && !isRecording && !isProcessing) return colorError
+      // Errors (incl. "No transcript received") are surfaced via a toast, not a
+      // lingering tint: colorError == colorRecord, so a stuck red bar looks exactly
+      // like it's still recording. Fall through to idle once recording/processing end.
       return mouseArea.containsMouse ? Color.mHover : colorIdle
     }
     radius: Style.radiusL
@@ -165,7 +167,6 @@ Item {
         color: {
           if (isRecording) return "#ffffff"
           if (isProcessing) return Qt.lighter(colorProcess, 1.5)
-          if (lastError && !isRecording) return "#ffffff"
           return Color.mOnSurface
         }
         pointSize: iconSize * 0.8
