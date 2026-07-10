@@ -43,6 +43,22 @@ WebSocketStream::~WebSocketStream() {
     }
 }
 
+void WebSocketStream::abort() {
+    if (!open_) return;
+    // Flip finished_ so the ws thread exits its loop on the next poll (~10ms), without
+    // sending flush or waiting for the server. Then join and clean up.
+    stopping_ = true;
+    finished_ = true;
+    queue_cv_.notify_all();
+    result_cv_.notify_all();
+    if (ws_thread_.joinable()) ws_thread_.join();
+    if (curl_) {
+        curl_easy_cleanup(curl_);
+        curl_ = nullptr;
+    }
+    open_ = false;
+}
+
 std::string WebSocketStream::base64_encode(const uint8_t* data, size_t len) {
     static constexpr char table[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

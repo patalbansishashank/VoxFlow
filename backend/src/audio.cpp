@@ -25,6 +25,17 @@ bool AudioCapture::start(int sample_rate, int channels, LevelCallback cb, FrameC
     sample_rate_ = sample_rate;
     channels_ = channels;
 
+    // Prefer the PulseAudio backend (PipeWire-pulse) so capture follows the system
+    // *default source* and its routing — including Bluetooth/USB headset mics. With
+    // miniaudio's default backend order we were landing on a raw ALSA device that
+    // delivered all-zero samples for a BT dongle mic (callbacks fired, but silence).
+    context_ = std::make_unique<ma_context>();
+    ma_backend backends[] = { ma_backend_pulseaudio, ma_backend_alsa, ma_backend_jack };
+    if (ma_context_init(backends, sizeof(backends) / sizeof(backends[0]), nullptr,
+                        context_.get()) != MA_SUCCESS) {
+        context_.reset();   // fall back to miniaudio's own default context selection
+    }
+
     device_ = std::make_unique<ma_device>();
 
     ma_device_config config = ma_device_config_init(ma_device_type_capture);
@@ -34,10 +45,12 @@ bool AudioCapture::start(int sample_rate, int channels, LevelCallback cb, FrameC
     config.dataCallback = data_callback;
     config.pUserData = this;
 
-    ma_result result = ma_device_init(nullptr, &config, device_.get());
+    ma_result result = ma_device_init(context_ ? context_.get() : nullptr, &config,
+                                      device_.get());
     if (result != MA_SUCCESS) {
         recording_ = false;
         device_.reset();
+        if (context_) { ma_context_uninit(context_.get()); context_.reset(); }
         return false;
     }
 
@@ -45,6 +58,7 @@ bool AudioCapture::start(int sample_rate, int channels, LevelCallback cb, FrameC
     if (result != MA_SUCCESS) {
         ma_device_uninit(device_.get());
         device_.reset();
+        if (context_) { ma_context_uninit(context_.get()); context_.reset(); }
         recording_ = false;
         return false;
     }
@@ -61,6 +75,10 @@ std::vector<uint8_t> AudioCapture::stop() {
         ma_device_stop(device_.get());
         ma_device_uninit(device_.get());
         device_.reset();
+    }
+    if (context_) {
+        ma_context_uninit(context_.get());
+        context_.reset();
     }
 
     std::vector<int16_t> samples;

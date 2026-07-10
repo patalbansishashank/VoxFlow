@@ -31,6 +31,7 @@ static Clipboard clipboard;
 static std::unique_ptr<WebSocketStream> stream;
 static KeybindManager keybinds;
 static bool first_config = true;
+static std::chrono::steady_clock::time_point recording_started_at;
 // Guards every keybind op + the config write, since the Hyprland-event listener thread
 // (below) re-asserts binds concurrently with the main JSON-RPC thread.
 static std::mutex keybind_mutex;
@@ -170,6 +171,7 @@ static bool start_recording(const json& params) {
         });
 
     if (ok) {
+        recording_started_at = std::chrono::steady_clock::now();
         write_output(make_event("recording_started", {}) + "\n");
     } else {
         write_output(make_event("error", {
@@ -186,6 +188,17 @@ static bool start_recording(const json& params) {
 static void stop_recording(int64_t id) {
     if (!capture.is_recording()) {
         write_output(make_error(id, -1, "Not recording") + "\n");
+        return;
+    }
+
+    // Quick cancel: start-then-stop within a moment = "never mind, don't transcribe".
+    // Don't sit in "processing" waiting on the server for a transcript that will never
+    // come (silent/near-empty stream) — tear down and go straight back to idle.
+    auto elapsed = std::chrono::steady_clock::now() - recording_started_at;
+    if (elapsed < std::chrono::milliseconds(500)) {
+        capture.stop();
+        if (stream) { stream->abort(); stream.reset(); }
+        write_output(make_result(id, {{"text", ""}, {"length", 0}, {"cancelled", true}}) + "\n");
         return;
     }
 

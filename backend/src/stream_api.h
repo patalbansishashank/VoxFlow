@@ -42,6 +42,10 @@ public:
 
     StreamResult close();
 
+    // Tear the stream down immediately WITHOUT waiting for a final transcript — used to
+    // cancel a recording (start-then-stop within a moment). Discards any pending result.
+    void abort();
+
     bool is_open() const { return open_.load(); }
 
 private:

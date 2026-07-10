@@ -8,6 +8,7 @@
 #include <atomic>
 
 struct ma_device;
+struct ma_context;
 
 class AudioCapture {
 public:
@@ -34,6 +35,7 @@ private:
     static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput,
                               unsigned int frameCount);
 
+    std::unique_ptr<ma_context> context_;
     std::unique_ptr<ma_device> device_;
     std::vector<int16_t> buffer_;
     std::mutex mutex_;
