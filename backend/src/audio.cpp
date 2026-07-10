@@ -21,6 +21,7 @@ bool AudioCapture::start(int sample_rate, int channels, LevelCallback cb, FrameC
     frame_cb_ = std::move(frame_cb);
     buffer_.clear();
     level_.store(0.0f, std::memory_order_relaxed);
+    peak_.store(0.0f, std::memory_order_relaxed);
     recording_ = true;
     sample_rate_ = sample_rate;
     channels_ = channels;
@@ -164,6 +165,10 @@ void AudioCapture::data_callback(ma_device* pDevice, void* pOutput, const void* 
         rms = std::sqrt(rms / static_cast<float>(sampleCount));
     }
     self->level_.store(rms, std::memory_order_relaxed);
+    // Single writer (the audio thread), so a plain load/compare/store is safe.
+    if (rms > self->peak_.load(std::memory_order_relaxed)) {
+        self->peak_.store(rms, std::memory_order_relaxed);
+    }
 
     if (self->level_cb_) {
         self->level_cb_(rms);

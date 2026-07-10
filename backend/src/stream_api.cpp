@@ -232,13 +232,27 @@ StreamResult WebSocketStream::close() {
     stopping_ = true;
     queue_cv_.notify_one();
 
+    bool timed_out = false;
     {
         std::unique_lock<std::mutex> lock(result_mutex_);
-        bool timed_out = !result_cv_.wait_for(lock, std::chrono::seconds(30), [this] {
+        // Backstop only: silent recordings are cancelled upstream (never reach close()),
+        // so this wait covers a real utterance whose server response is slow. 12s is far
+        // beyond normal finalization (~1-3s) yet keeps the backend from freezing for long
+        // if the server never answers.
+        timed_out = !result_cv_.wait_for(lock, std::chrono::seconds(12), [this] {
             return finished_.load();
         });
         debug_log("[DEBUG] close() wait finished, timed_out=%d, transcript_='%s', server_error_='%s'\n",
                   timed_out, transcript_.c_str(), server_error_.c_str());
+    }
+
+    // If the server never answered, the ws thread is still spinning in its recv loop
+    // (`while (!finished_)`). Force it to exit so the join below can't block forever —
+    // this is what was freezing the whole backend (mic goes dead) on a stuck stream.
+    if (timed_out) {
+        finished_ = true;
+        result_cv_.notify_all();
+        queue_cv_.notify_all();
     }
 
     if (ws_thread_.joinable()) {

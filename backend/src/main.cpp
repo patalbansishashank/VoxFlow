@@ -32,6 +32,9 @@ static std::unique_ptr<WebSocketStream> stream;
 static KeybindManager keybinds;
 static bool first_config = true;
 static std::chrono::steady_clock::time_point recording_started_at;
+// Serialises the shared-state part of finalize (history append + clipboard paste) across
+// the detached finalize workers below.
+static std::mutex finalize_mutex;
 // Guards every keybind op + the config write, since the Hyprland-event listener thread
 // (below) re-asserts binds concurrently with the main JSON-RPC thread.
 static std::mutex keybind_mutex;
@@ -191,11 +194,17 @@ static void stop_recording(int64_t id) {
         return;
     }
 
-    // Quick cancel: start-then-stop within a moment = "never mind, don't transcribe".
-    // Don't sit in "processing" waiting on the server for a transcript that will never
-    // come (silent/near-empty stream) — tear down and go straight back to idle.
+    // Cancel (go straight back to idle, don't wait on the server) when the recording
+    // carried no transcribable speech:
+    //   - too short: a start-then-stop within ~500ms = "never mind", or
+    //   - silent:    no meaningful audio the whole time (peak RMS below threshold).
+    // The silent case is the important one — otherwise close() blocks this single JSON-RPC
+    // thread up to its timeout waiting for a transcript that never comes, which freezes the
+    // whole backend (mic appears dead) until it gives up.
     auto elapsed = std::chrono::steady_clock::now() - recording_started_at;
-    if (elapsed < std::chrono::milliseconds(500)) {
+    bool too_short = elapsed < std::chrono::milliseconds(500);
+    bool silent = capture.peak_level() < 0.012f;
+    if (too_short || silent) {
         capture.stop();
         if (stream) { stream->abort(); stream.reset(); }
         write_output(make_result(id, {{"text", ""}, {"length", 0}, {"cancelled", true}}) + "\n");
@@ -223,7 +232,7 @@ static void stop_recording(int64_t id) {
         }
     }
 
-    std::vector<uint8_t> wav = capture.stop();
+    capture.stop();   // release the mic now; the device is free for the next recording
 
     write_output(make_event("processing", {}) + "\n");
 
@@ -232,26 +241,34 @@ static void stop_recording(int64_t id) {
         return;
     }
 
-    StreamResult result = stream->close();
-    stream.reset();
+    // Finalize (close the stream, wait for the transcript, paste) on a DETACHED worker so
+    // the JSON-RPC loop stays responsive: close() can take a few seconds — and, on a stuck
+    // stream, up to its 12s cap — but the backend must not freeze (that was the mic "going
+    // dead"). Move the stream into the worker so a new recording can open a fresh one; the
+    // mic was already released above.
+    auto owned = std::move(stream);   // global `stream` is now null
+    bool append_nl = config.append_newline;
+    std::thread([id, append_nl, st = std::move(owned)]() mutable {
+        StreamResult result = st->close();
+        st.reset();
 
-    if (!result.success) {
-        write_output(make_event("error", {
-            {"message", result.error_message}
+        if (!result.success) {
+            write_output(make_event("error", {{"message", result.error_message}}) + "\n");
+            write_output(make_error(id, -4, result.error_message) + "\n");
+            return;
+        }
+
+        const std::string& text = result.text;
+        {
+            std::lock_guard<std::mutex> lk(finalize_mutex);
+            append_history(text);
+            clipboard.copy_and_paste(text, append_nl);
+        }
+        write_output(make_result(id, {
+            {"text", text},
+            {"length", text.length()}
         }) + "\n");
-        write_output(make_error(id, -4, result.error_message) + "\n");
-        return;
-    }
-
-    std::string text = result.text;
-
-    append_history(text);
-    clipboard.copy_and_paste(text, config.append_newline);
-
-    write_output(make_result(id, {
-        {"text", text},
-        {"length", text.length()}
-    }) + "\n");
+    }).detach();
 }
 
 static void handle_config(const json& params) {
