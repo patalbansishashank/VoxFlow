@@ -132,14 +132,6 @@ Item {
     }
   }
 
-  // Live caption while dictating (click-through OSD; see LiveCaption.qml).
-  readonly property bool liveCaptionEnabled:
-    pluginApi?.pluginSettings?.showLiveCaption ?? true
-  Loader {
-    active: root.liveCaptionEnabled && (root.recording || root.processing)
-    sourceComponent: LiveCaption { main: root }
-  }
-
   IpcHandler {
     target: "plugin:voxflow"
 

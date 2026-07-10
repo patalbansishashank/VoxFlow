@@ -181,11 +181,26 @@ static void stop_recording(int64_t id) {
         return;
     }
 
-    // Grace period: users hit the stop chord the instant they finish talking, but the
-    // last words are still in the mic pipeline / on the wire. Keep capturing briefly so
-    // the tail reaches the server — it overlaps with finalization, so the perceived
-    // extra latency is well under the 300ms.
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // Adaptive end-of-speech: users hit the stop chord the instant they *think* they're
+    // done, but a trailing word may still be coming out (or in the mic pipeline). Instead
+    // of a blind fixed grace, keep the mic open until we actually detect a short trailing
+    // silence in the live input RMS — so we never cut off mid-word, yet stop promptly once
+    // you've clearly finished. Bounded so a noisy room can't stall the stop.
+    constexpr float kSilenceLevel  = 0.012f;  // RMS below this ≈ not speaking
+    constexpr int   kSilenceHoldMs = 250;     // continuous silence that confirms "done"
+    constexpr int   kMaxWaitMs     = 1500;    // hard cap (noise floor safety)
+    constexpr int   kStepMs        = 20;
+    int waited = 0, quiet = 0;
+    while (waited < kMaxWaitMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
+        waited += kStepMs;
+        if (capture.current_level() < kSilenceLevel) {
+            quiet += kStepMs;
+            if (quiet >= kSilenceHoldMs) break;   // stopped talking → finish
+        } else {
+            quiet = 0;                            // still speaking → keep capturing
+        }
+    }
 
     std::vector<uint8_t> wav = capture.stop();
 

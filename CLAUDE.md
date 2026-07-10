@@ -112,11 +112,17 @@ RPC surface: `get_history`, `paste_text` (full copy→paste→restore flow), `se
 recorder rows in Settings (the picker ones are single-chord; removing the pill = disabled,
 stored as `""`).
 
-While dictating, `LiveCaption.qml` (click-through OSD pill, bottom of the focused monitor,
-`showLiveCaption` setting) shows the live transcript: the backend streams the full running
-text (finals + revisable tail) in every `transcript` event. The stop chord keeps the mic
-open ~300ms (tail grace) and Soniox accumulation is finals-only + tail — the old start_ms
-watermark dedup dropped flush-corrected finals, cutting off the last words.
+The backend streams the full running transcript (finals + revisable tail) in every
+`transcript` event; `Main.qml` stores it as `partialText`, consumed by the BarWidget hover
+tooltip (there is no floating caption — removed as eye-candy since Sarvam can't do
+word-by-word). Soniox accumulation is finals-only + tail — the old start_ms watermark dedup
+dropped flush-corrected finals, cutting off the last words.
+
+**Adaptive stop (end-of-speech):** the stop chord doesn't cut off immediately or wait a
+fixed delay. `stop_recording()` keeps the mic open until a short trailing silence is
+detected via the RMS we already compute (`AudioCapture::current_level()`) — ~200ms of
+silence, hard-capped ~1500ms. Forgives hitting Super+Z a beat early; stops promptly once
+you've clearly finished. Tunable constants in `main.cpp`.
 
 How it works (all in `backend/src/hypr.{h,cpp}` + wired in `main.cpp`):
 - The bound chord runs `qs -c noctalia-shell ipc call plugin:voxflow toggleRecording`.

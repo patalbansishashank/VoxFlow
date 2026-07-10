@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import qs.Commons
 import qs.Widgets
@@ -112,51 +113,44 @@ Item {
         }
       }
 
-      Rectangle {
-        id: outerSpinner
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        width: iconSize * 1.8
+      // Indeterminate "transcribing" spinner. A sweeping ARC, not a full ring — a full
+      // ring rotating is visually static (that's why the old spinners just read as a flat
+      // colour). This clearly rotates, so it's unmistakably "working".
+      Shape {
+        id: procSpinner
+        anchors.centerIn: parent
+        width: iconSize * 1.7
         height: width
-        radius: width / 2
-        color: "transparent"
-        border.color: Qt.rgba(colorProcess.r, colorProcess.g, colorProcess.b, 0.5)
-        border.width: Math.max(2, capsuleHeight * 0.035)
+        antialiasing: true
         opacity: isProcessing ? 1.0 : 0
-        visible: isProcessing
+        visible: opacity > 0
 
-        Behavior on opacity { NumberAnimation { duration: 300 } }
+        readonly property real stroke: Math.max(2, capsuleHeight * 0.06)
 
-        PropertyAnimation on rotation {
-          loops: Animation.Infinite
+        Behavior on opacity { NumberAnimation { duration: 250 } }
+
+        ShapePath {
+          strokeColor: colorProcess
+          fillColor: "transparent"
+          strokeWidth: procSpinner.stroke
+          capStyle: ShapePath.RoundCap
+          PathAngleArc {
+            centerX: procSpinner.width / 2
+            centerY: procSpinner.height / 2
+            radiusX: procSpinner.width / 2 - procSpinner.stroke
+            radiusY: procSpinner.height / 2 - procSpinner.stroke
+            startAngle: 0
+            sweepAngle: 290
+            moveToStart: true
+          }
+        }
+
+        RotationAnimator on rotation {
           running: isProcessing
+          loops: Animation.Infinite
           from: 0
           to: 360
-          duration: 1200
-        }
-      }
-
-      Rectangle {
-        id: innerSpinner
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        width: iconSize * 1.2
-        height: width
-        radius: width / 2
-        color: "transparent"
-        border.color: Qt.rgba(colorProcess.r, colorProcess.g, colorProcess.b, 0.35)
-        border.width: Math.max(1.5, capsuleHeight * 0.025)
-        opacity: isProcessing ? 1.0 : 0
-        visible: isProcessing
-
-        Behavior on opacity { NumberAnimation { duration: 300 } }
-
-        PropertyAnimation on rotation {
-          loops: Animation.Infinite
-          running: isProcessing
-          from: 360
-          to: 0
-          duration: 800
+          duration: 900
         }
       }
 
@@ -169,8 +163,18 @@ Item {
           if (isProcessing) return Qt.lighter(colorProcess, 1.5)
           return Color.mOnSurface
         }
+        // Gentle breathing while transcribing, so even the icon shows life.
         pointSize: iconSize * 0.8
-        opacity: isProcessing ? 0.6 : 1.0
+        opacity: isProcessing ? 0.75 : 1.0
+        scale: isProcessing ? procPulse : 1.0
+        property real procPulse: 1.0
+
+        SequentialAnimation on procPulse {
+          running: isProcessing
+          loops: Animation.Infinite
+          NumberAnimation { from: 0.88; to: 1.06; duration: 550; easing.type: Easing.InOutSine }
+          NumberAnimation { from: 1.06; to: 0.88; duration: 550; easing.type: Easing.InOutSine }
+        }
 
         Behavior on color { ColorAnimation { duration: 250 } }
         Behavior on opacity { NumberAnimation { duration: 250 } }

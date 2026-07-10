@@ -21,8 +21,7 @@
       "appendNewline": true,
       "keybinds": ["SUPER + Z"],
       "transcriptHistoryKeybind": "SUPER + SHIFT + Z",
-      "clipboardHistoryKeybind": "SUPER + V",
-      "showLiveCaption": true
+      "clipboardHistoryKeybind": "SUPER + V"
     }
   }
 }

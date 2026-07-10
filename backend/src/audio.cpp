@@ -20,6 +20,7 @@ bool AudioCapture::start(int sample_rate, int channels, LevelCallback cb, FrameC
     level_cb_ = std::move(cb);
     frame_cb_ = std::move(frame_cb);
     buffer_.clear();
+    level_.store(0.0f, std::memory_order_relaxed);
     recording_ = true;
     sample_rate_ = sample_rate;
     channels_ = channels;
@@ -134,13 +135,19 @@ void AudioCapture::data_callback(ma_device* pDevice, void* pOutput, const void* 
         self->frame_cb_(samples, sampleCount);
     }
 
-    if (self->level_cb_) {
-        float rms = 0.0f;
+    // Always compute RMS: it drives both the optional level callback (bar meter) and the
+    // adaptive end-of-speech wait (AudioCapture::current_level()).
+    float rms = 0.0f;
+    if (sampleCount > 0) {
         for (unsigned int i = 0; i < sampleCount; ++i) {
             float s = samples[i] / 32768.0f;
             rms += s * s;
         }
         rms = std::sqrt(rms / static_cast<float>(sampleCount));
+    }
+    self->level_.store(rms, std::memory_order_relaxed);
+
+    if (self->level_cb_) {
         self->level_cb_(rms);
     }
 }

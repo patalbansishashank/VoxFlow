@@ -18,7 +18,6 @@ ColumnLayout {
   property var    editKeybinds:      ["SUPER + Z"]
   property string editHistoryKb:     "SUPER + SHIFT + Z"
   property string editClipboardKb:   "SUPER + V"
-  property bool   editShowCaption:   true
   property bool   _loaded: false
 
   // ---- keybind recorder state ----
@@ -41,7 +40,6 @@ ColumnLayout {
     // ?? (not ||): "" is a valid value meaning "shortcut disabled".
     editHistoryKb   = pluginApi.pluginSettings.transcriptHistoryKeybind ?? "SUPER + SHIFT + Z"
     editClipboardKb = pluginApi.pluginSettings.clipboardHistoryKeybind  ?? "SUPER + V"
-    editShowCaption = pluginApi.pluginSettings.showLiveCaption          ?? true
     _loaded = true
   }
 
@@ -52,7 +50,6 @@ ColumnLayout {
     pluginApi.pluginSettings.provider         = root.editProvider
     pluginApi.pluginSettings.language         = root.editLanguage
     pluginApi.pluginSettings.appendNewline    = root.editAppendNewline
-    pluginApi.pluginSettings.showLiveCaption  = root.editShowCaption
     pluginApi.saveSettings()
     if (pluginApi.mainInstance) {
       pluginApi.mainInstance.updateConfig()
@@ -190,15 +187,6 @@ ColumnLayout {
     description: pluginApi?.tr("settings.append_newline_desc") || "Add a newline after pasted text"
     checked: root.editAppendNewline
     onToggled: (v) => { root.editAppendNewline = v; saveSettings() }
-  }
-
-  NToggle {
-    Layout.fillWidth: true
-    label: pluginApi?.tr("settings.live_caption") || "Live Caption"
-    description: pluginApi?.tr("settings.live_caption_desc")
-                 || "Show what's being heard in an overlay while you dictate"
-    checked: root.editShowCaption
-    onToggled: (v) => { root.editShowCaption = v; saveSettings() }
   }
 
   NDivider { Layout.fillWidth: true }

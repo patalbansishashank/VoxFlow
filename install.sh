@@ -73,7 +73,7 @@ fi
 mkdir -p "$PLUGIN_DIR/bin"
 
 # 5) copy the plugin payload (skip dev/build cruft, PKGBUILD, .git, settings.json)
-for item in manifest.json Main.qml BarWidget.qml Settings.qml HistoryPanel.qml LiveCaption.qml README.md i18n; do
+for item in manifest.json Main.qml BarWidget.qml Settings.qml HistoryPanel.qml README.md i18n; do
   [[ -e "$SRC/$item" ]] && cp -r "$SRC/$item" "$PLUGIN_DIR/"
 done
 # install the backend atomically (temp + rename): a copy-in-place would hit ETXTBSY

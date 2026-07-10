@@ -411,7 +411,8 @@ void WebSocketStream::ws_thread_fn() {
                                 latest_text_ = preview;
                             }
                             if (callback_) {
-                                // Full running text, not a fragment — feeds the live caption.
+                                // Full running text, not a fragment — feeds partialText
+                                // (BarWidget hover tooltip).
                                 TranscriptSegment seg;
                                 seg.text = preview;
                                 seg.is_final = false;
@@ -467,7 +468,7 @@ void WebSocketStream::ws_thread_fn() {
                                         preview = transcript_;
                                     }
                                     if (callback_) {
-                                        // Full running text — feeds the live caption.
+                                        // Full running text — feeds partialText (tooltip).
                                         TranscriptSegment seg;
                                         seg.text = preview;
                                         seg.is_final = false;

@@ -96,12 +96,6 @@ Enter pastes into the window you came from):
 All three shortcuts are editable in **VoxFlow Settings → Keyboard Shortcut** (removing a
 picker's pill disables that shortcut).
 
-### Live caption
-
-While you dictate, a click-through overlay at the bottom of the screen shows what the
-server has heard so far — so you can look away from the cursor and still know your words
-landed. Toggle it in Settings ("Live Caption").
-
 ### Language
 
 Set the language code in Settings (e.g. `en-IN`, `hi-IN`, `en-US`). Soniox uses `language_hints_strict` so only the specified language is transcribed (prevents Devanagari/Bengali script output).
