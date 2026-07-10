@@ -11,6 +11,8 @@ namespace hypr {
     // "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock", or "" if the
     // env vars are missing (i.e. not running under Hyprland).
     std::string socket_path();
+    // The event-stream socket ".socket2.sock" (emits "configreloaded>>", etc.), or "".
+    std::string event_socket_path();
     bool available();
     // Send a raw request (e.g. "eval hl.bind(...)") and return Hyprland's reply
     // ("ok" on success, "" if the socket could not be reached).

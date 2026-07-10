@@ -22,6 +22,13 @@ std::string hypr::socket_path() {
     return std::string(xdg) + "/hypr/" + his + "/.socket.sock";
 }
 
+std::string hypr::event_socket_path() {
+    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+    const char* his = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if (!xdg || !his || !*xdg || !*his) return "";
+    return std::string(xdg) + "/hypr/" + his + "/.socket2.sock";
+}
+
 bool hypr::available() {
     std::string p = socket_path();
     if (p.empty()) return false;

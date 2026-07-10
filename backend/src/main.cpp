@@ -19,6 +19,9 @@
 #include <vector>
 
 #include <unistd.h>
+#include <cstring>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 static std::atomic<bool> running{true};
 static std::mutex cout_mutex;
@@ -28,6 +31,11 @@ static Clipboard clipboard;
 static std::unique_ptr<WebSocketStream> stream;
 static KeybindManager keybinds;
 static bool first_config = true;
+// Guards every keybind op + the config write, since the Hyprland-event listener thread
+// (below) re-asserts binds concurrently with the main JSON-RPC thread.
+static std::mutex keybind_mutex;
+static std::atomic<int> event_fd{-1};
+static std::thread event_thread;
 
 static void write_output(const std::string& line) {
     std::lock_guard<std::mutex> lock(cout_mutex);
@@ -234,16 +242,65 @@ static void stop_recording(int64_t id) {
 }
 
 static void handle_config(const json& params) {
-    config.from_json(params);
-    // Register the plugin-owned chords live in Hyprland (toggle + history pickers).
-    // Skip while the settings UI is capturing a chord (binds are suspended then; they
-    // get reconciled on capture end).
-    if (hypr::available() && !keybinds.is_capturing()) {
-        if (first_config) keybinds.migrate_hyprland_config();
-        keybinds.reconcile(desired_binds(), first_config);
-        first_config = false;
+    {
+        std::lock_guard<std::mutex> lock(keybind_mutex);
+        config.from_json(params);
+        // Register the plugin-owned chords live in Hyprland (toggle + history pickers).
+        // Skip while the settings UI is capturing a chord (binds are suspended then; they
+        // get reconciled on capture end).
+        if (hypr::available() && !keybinds.is_capturing()) {
+            if (first_config) keybinds.migrate_hyprland_config();
+            keybinds.reconcile(desired_binds(), first_config);
+            first_config = false;
+        }
     }
+    // Only the (single) main thread writes config, so this read needs no lock.
     write_output(make_event("config_updated", config.to_json()) + "\n");
+}
+
+// Force-re-register our binds. Called when Hyprland reloads its config, which wipes all
+// runtime-registered binds (hl.bind) — without this they silently stop working until the
+// next backend restart. The `initial=true` reconcile unbinds-then-binds unconditionally.
+static void reassert_binds() {
+    std::lock_guard<std::mutex> lock(keybind_mutex);
+    if (first_config) return;                    // no user config received yet
+    if (!hypr::available() || keybinds.is_capturing()) return;
+    keybinds.reconcile(desired_binds(), /*initial=*/true);
+}
+
+// Long-lived thread: subscribe to Hyprland's event stream and re-assert binds on
+// `configreloaded`. Exits cleanly when `running` is cleared and the fd is shut down.
+static void hypr_event_loop() {
+    std::string path = hypr::event_socket_path();
+    if (path.empty()) return;
+
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    if (path.size() >= sizeof(addr.sun_path)) { ::close(fd); return; }
+    std::strcpy(addr.sun_path, path.c_str());
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return;
+    }
+    event_fd = fd;
+
+    std::string buf;
+    char tmp[4096];
+    while (running) {
+        ssize_t n = ::read(fd, tmp, sizeof(tmp));
+        if (n <= 0) break;                       // Hyprland gone, or shutdown() woke us
+        buf.append(tmp, static_cast<size_t>(n));
+        size_t nl;
+        while ((nl = buf.find('\n')) != std::string::npos) {
+            std::string line = buf.substr(0, nl);
+            buf.erase(0, nl + 1);
+            if (line.rfind("configreloaded", 0) == 0) reassert_binds();
+        }
+    }
+    int old = event_fd.exchange(-1);
+    if (old >= 0) ::close(old);
 }
 
 static void process_line(const std::string& line) {
@@ -263,8 +320,10 @@ static void process_line(const std::string& line) {
         }
     } else if (req.method == "set_capture_mode") {
         // The settings UI toggles this around recording a new chord.
-        if (hypr::available())
+        if (hypr::available()) {
+            std::lock_guard<std::mutex> lock(keybind_mutex);
             keybinds.set_capture(req.params.value("on", false), desired_binds());
+        }
     } else if (req.method == "get_history") {
         // Past transcripts, newest first — feeds the history pickers.
         size_t limit = req.params.value("limit", 100);
@@ -283,9 +342,20 @@ static void process_line(const std::string& line) {
     } else if (req.method == "ping") {
         write_output(make_result(req.id, {{"pong", true}}) + "\n");
     } else if (req.method == "shutdown") {
-        keybinds.clear();
+        {
+            std::lock_guard<std::mutex> lock(keybind_mutex);
+            keybinds.clear();
+        }
         running = false;
     }
+}
+
+// Wake the event listener's blocking read() so the thread can exit, then join it.
+static void stop_event_listener() {
+    running = false;
+    int fd = event_fd.load();
+    if (fd >= 0) ::shutdown(fd, SHUT_RDWR);   // unblock read() without closing (no fd reuse)
+    if (event_thread.joinable()) event_thread.join();
 }
 
 int main() {
@@ -298,11 +368,18 @@ int main() {
         {"mode", "streaming"}
     }) + "\n");
 
+    // Re-assert Hyprland binds whenever the config reloads (which wipes runtime binds).
+    if (hypr::available()) {
+        event_thread = std::thread(hypr_event_loop);
+    }
+
     std::string line;
     while (running && std::getline(std::cin, line)) {
         if (line.empty()) continue;
         process_line(line);
     }
+
+    stop_event_listener();
 
     if (capture.is_recording()) {
         capture.stop();
