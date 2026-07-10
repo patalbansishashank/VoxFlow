@@ -3,6 +3,15 @@
 #include <string>
 #include <memory>
 
+// A saved clipboard selection: the exact bytes of the most useful MIME type on offer
+// (text stays text, an image stays image/png, ...), so it can be restored losslessly
+// after we paste the transcript. mime == "" means there was nothing to save.
+struct ClipSaved {
+    std::string mime;
+    std::string data;
+    bool empty() const { return mime.empty() || data.empty(); }
+};
+
 class Clipboard {
 public:
     Clipboard();
@@ -15,8 +24,8 @@ public:
     bool paste();
     bool copy_and_paste(const std::string& text, bool append_newline);
 
-    std::string save();
-    bool restore(const std::string& previous);
+    ClipSaved save();
+    bool restore(const ClipSaved& previous);
 
 private:
     bool paste_via_wtype();
