@@ -64,7 +64,14 @@ bool Clipboard::restore(const std::string& previous) {
 }
 
 bool Clipboard::paste_via_wtype() {
-    return run_command("wtype -M ctrl -k v -m ctrl 2>/dev/null");
+    // Native-Wayland Chromium/Electron are strict about wtype's synthetic input: they
+    // drop the Ctrl+V when the freshly-created virtual keyboard's keymap isn't active
+    // yet, or when Ctrl and V arrive in the same instant. Lenient apps (Alacritty)
+    // tolerate the fast path, which is why the terminal pasted but the browser didn't.
+    // Settle after the keyboard is created (-s 90), then hold Ctrl with small gaps
+    // around an explicit press/release of V so the modifier is reliably applied.
+    return run_command(
+        "wtype -s 90 -M ctrl -s 24 -P v -s 24 -p v -s 24 -m ctrl 2>/dev/null");
 }
 
 bool Clipboard::paste_via_ydotool() {
