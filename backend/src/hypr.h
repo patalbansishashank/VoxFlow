@@ -15,6 +15,12 @@ namespace hypr {
     // Send a raw request (e.g. "eval hl.bind(...)") and return Hyprland's reply
     // ("ok" on success, "" if the socket could not be reached).
     std::string request(const std::string& cmd);
+    // Compositor-synthesized Ctrl+V to the focused window (hl.dsp.send_shortcut).
+    // Unlike wtype's virtual-keyboard events — which native-Wayland Chromium/Electron
+    // silently drop — input synthesized by the compositor itself is indistinguishable
+    // from the real keyboard, so every app accepts it. Returns false off Hyprland or
+    // on a non-"ok" reply (caller falls back to ydotool/wtype).
+    bool send_ctrl_v();
 }
 
 // Owns VoxFlow's Hyprland keybinds. The plugin — not hyprland.lua — is the source of

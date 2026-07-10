@@ -62,6 +62,15 @@ std::string hypr::request(const std::string& cmd) {
     return reply;
 }
 
+bool hypr::send_ctrl_v() {
+    if (!available()) return false;
+    // No `window` arg -> the focused window, i.e. wherever the user's cursor is when
+    // they stop dictating. Verified live on this Hyprland (0.55, Lua parser).
+    std::string reply = request(
+        "eval hl.dispatch(hl.dsp.send_shortcut({ mods = \"CTRL\", key = \"V\" }))");
+    return reply.rfind("ok", 0) == 0;
+}
+
 void KeybindManager::bind(const std::string& chord) {
     if (chord.empty()) return;
     hypr::request("eval hl.bind(\"" + chord + "\", hl.dsp.exec_cmd(\"" + kToggleCmd + "\"))");

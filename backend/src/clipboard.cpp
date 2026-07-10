@@ -1,4 +1,5 @@
 #include "clipboard.h"
+#include "hypr.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -103,9 +104,14 @@ bool Clipboard::paste_via_ydotool() {
 }
 
 bool Clipboard::paste() {
-    // Prefer ydotool: kernel-level input that Chromium/Electron accept. Fall back to
-    // wtype (Wayland virtual keyboard) when ydotoold isn't installed/running — that
-    // still works for lenient native-Wayland apps (terminals, most GTK/Qt).
+    // Injection preference, most- to least-compatible:
+    //  1. Hyprland send_shortcut — the compositor synthesizes Ctrl+V on the real seat,
+    //     indistinguishable from the physical keyboard; Chromium/Electron accept it
+    //     (verified live). No root, no extra daemon.
+    //  2. ydotool — kernel-level uinput, also universally accepted, but needs ydotoold.
+    //  3. wtype — Wayland virtual keyboard; lenient apps only (terminals, most GTK/Qt);
+    //     native-Wayland Chromium/Electron silently drop it.
+    if (hypr::send_ctrl_v()) return true;
     if (paste_via_ydotool()) return true;
     if (paste_via_wtype()) return true;
     return false;
