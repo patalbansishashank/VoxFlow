@@ -131,9 +131,15 @@ press to start, press again to stop and transcribe.
 - `pluginApi.pluginSettings` is persisted by Noctalia to `<pluginDir>/settings.json`. It holds
   the **Soniox and Sarvam API keys**, provider, language. This is **user data, not repo data.**
 - `settings.json` is **git-ignored** — never commit it. When the plugin dir was a symlink into
-  this repo, Noctalia wrote the keys into the repo and they were committed in the initial commit
-  (public GitHub), so **those keys are compromised and should be rotated.** A fresh clone gets
-  defaults from `manifest.json` (`defaultSettings`); Noctalia creates a new `settings.json`.
+  this repo, Noctalia wrote the keys into the repo and they were committed (initial commit
+  `c1b6e12` … `3bffae3`, public GitHub). **Git history was purged on 2026-07-10**
+  (`git filter-branch` over `settings.json`, force-pushed; all commits kept their messages but
+  got new SHAs, `main` is now `20eac12…`). A pre-purge backup bundle lived in the session
+  scratchpad. **The keys are still compromised and MUST be rotated regardless** — the old commit
+  SHAs stay reachable on GitHub by direct SHA until GitHub's own GC runs, and the keys were public
+  for weeks, so the rewrite does not un-leak them. A fresh clone gets defaults from `manifest.json`
+  (`defaultSettings`); Noctalia creates a new `settings.json`.
+- The live `settings.json` is `chmod 600` (owner-only; it holds plaintext keys).
 - `install.sh` preserves an existing `settings.json` in the plugin dir across reinstalls.
 
 ## Git / push
