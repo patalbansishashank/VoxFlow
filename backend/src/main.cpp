@@ -3,7 +3,6 @@
 #include "audio.h"
 #include "clipboard.h"
 #include "stream_api.h"
-#include "api.h"
 #include "hypr.h"
 
 #include <chrono>
@@ -151,19 +150,12 @@ static bool start_recording(const json& params) {
     int sr = params.value("sample_rate", config.sample_rate);
     int ch = params.value("channels", 1);
 
-    // Azure routing: provider "azure" with azure_model == "openai-streaming" is the streaming
-    // WebSocket path; every other azure_model is the batch REST path (no live stream — the whole
-    // clip is POSTed on stop, see stop_recording). soniox/sarvam are always streaming.
-    bool azure = (config.provider == "azure");
-    bool azure_streaming = azure && config.azure_model == "openai-streaming";
-    bool batch = azure && !azure_streaming;
-
     std::string api_key;
-    if (config.provider == "soniox")       api_key = config.soniox_api_key;
-    else if (config.provider == "sarvam")  api_key = config.sarvam_api_key;
-    else if (azure_streaming)              api_key = config.azure_openai_key;
-    else if (batch)                        api_key = config.azure_speech_key;
-    else                                   api_key = config.soniox_api_key;
+    if (config.provider == "sarvam") {
+        api_key = config.sarvam_api_key;
+    } else {
+        api_key = config.soniox_api_key;
+    }
 
     if (api_key.empty()) {
         write_output(make_event("error", {
@@ -171,55 +163,33 @@ static bool start_recording(const json& params) {
         }) + "\n");
         return false;
     }
-    if (batch && config.azure_speech_endpoint.empty()) {
-        write_output(make_event("error", {
-            {"message", "Azure Speech endpoint not configured"}
-        }) + "\n");
-        return false;
-    }
-    if (azure_streaming &&
-        (config.azure_openai_endpoint.empty() || config.azure_openai_deployment.empty())) {
-        write_output(make_event("error", {
-            {"message", "Azure OpenAI endpoint / deployment not configured"}
-        }) + "\n");
-        return false;
-    }
 
-    // Batch providers don't open a WebSocket — capture just buffers the whole clip, which we
-    // POST on stop. Streaming providers open the stream BEFORE capture so a WS failure means
-    // no capture.
-    if (!batch) {
-        stream = std::make_unique<WebSocketStream>();
-        auto on_seg = [](const TranscriptSegment& seg) {
+    stream = std::make_unique<WebSocketStream>();
+    bool ws_ok = stream->open(config.provider, api_key, config.language, sr,
+        [](const TranscriptSegment& seg) {
             json data;
             data["text"] = seg.text;
             data["is_final"] = seg.is_final;
             write_output(make_event("transcript", data) + "\n");
-        };
-        bool ws_ok = azure_streaming
-            ? stream->open("azure", api_key, config.language, sr, on_seg,
-                           config.azure_openai_endpoint, config.azure_openai_deployment)
-            : stream->open(config.provider, api_key, config.language, sr, on_seg);
+        });
 
-        if (!ws_ok) {
-            write_output(make_event("error", {
-                {"message", "Failed to connect to " + config.provider + " WebSocket"}
-            }) + "\n");
-            stream.reset();
-            return false;
-        }
+    if (!ws_ok) {
+        write_output(make_event("error", {
+            {"message", "Failed to connect to " + config.provider + " WebSocket"}
+        }) + "\n");
+        stream.reset();
+        return false;
     }
 
     bool ok = capture.start(sr, ch,
         [](float level) {
             write_output(make_event("level", {{"value", level}}) + "\n");
         },
-        batch ? AudioCapture::FrameCallback(nullptr)
-              : AudioCapture::FrameCallback([](const int16_t* samples, size_t count) {
-                    if (stream && stream->is_open()) {
-                        stream->send_audio(samples, count);
-                    }
-                }));
+        [](const int16_t* samples, size_t count) {
+            if (stream && stream->is_open()) {
+                stream->send_audio(samples, count);
+            }
+        });
 
     if (ok) {
         recording_started_at = std::chrono::steady_clock::now();
@@ -280,57 +250,9 @@ static void stop_recording(int64_t id) {
         }
     }
 
-    bool azure = (config.provider == "azure");
-    bool batch = azure && config.azure_model != "openai-streaming";
-
-    // Batch needs the whole clip: capture.stop() returns the full WAV (streaming discards it).
-    std::vector<uint8_t> wav;
-    if (batch) wav = capture.stop();
-    else       capture.stop();   // release the mic; the device is free for the next recording
+    capture.stop();   // release the mic now; the device is free for the next recording
 
     write_output(make_event("processing", {}) + "\n");
-
-    if (batch) {
-        if (wav.empty()) {
-            write_output(make_error(id, -2, "No audio captured") + "\n");
-            return;
-        }
-        // POST the whole WAV to Azure on a DETACHED worker (keeps the JSON-RPC loop responsive),
-        // then reuse the exact same paste + history tail as the streaming path. There's no
-        // WebSocketStream to register in `finalizing`; the generation check below is what
-        // discards this result if the user starts a new recording meanwhile.
-        uint64_t my_gen = session_gen.load();
-        bool append_nl = config.append_newline;
-        std::string key = config.azure_speech_key;
-        std::string endpoint = config.azure_speech_endpoint;
-        std::string model = config.azure_model;
-        std::string lang = config.language;
-        std::thread([id, append_nl, my_gen, wav = std::move(wav),
-                     key, endpoint, model, lang]() mutable {
-            ApiClient client;
-            ApiResult r = client.transcribe_azure(wav, key, endpoint, model, lang);
-
-            // Superseded by a newer recording → discard silently (no paste, no toast).
-            if (session_gen.load() != my_gen) return;
-
-            if (!r.success) {
-                write_output(make_event("error", {{"message", r.error_message}}) + "\n");
-                write_output(make_error(id, -4, r.error_message) + "\n");
-                return;
-            }
-            const std::string& text = r.text;
-            {
-                std::lock_guard<std::mutex> lk(finalize_mutex);
-                append_history(text);
-                clipboard.copy_and_paste(text, append_nl);
-            }
-            write_output(make_result(id, {
-                {"text", text},
-                {"length", text.length()}
-            }) + "\n");
-        }).detach();
-        return;
-    }
 
     if (!stream || !stream->is_open()) {
         write_output(make_error(id, -2, "WebSocket stream not open") + "\n");

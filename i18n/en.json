@@ -12,18 +12,6 @@
     "sarvam_key_desc": "API subscription key from dashboard.sarvam.ai",
     "provider": "Provider",
     "provider_desc": "Speech-to-text service provider",
-    "azure_model": "Azure model",
-    "azure_model_desc": "MAI-Transcribe is Microsoft's own state-of-the-art model (batch)",
-    "azure_speech_endpoint": "Azure Speech endpoint",
-    "azure_speech_endpoint_desc": "e.g. https://your-resource.cognitiveservices.azure.com",
-    "azure_speech_key": "Azure Speech key",
-    "azure_speech_key_desc": "Key 1 or Key 2 from the Speech resource (Keys and Endpoint)",
-    "azure_openai_endpoint": "Azure OpenAI endpoint",
-    "azure_openai_endpoint_desc": "e.g. https://your-resource.openai.azure.com",
-    "azure_openai_key": "Azure OpenAI key",
-    "azure_openai_key_desc": "Key 1 or Key 2 from the Azure OpenAI resource",
-    "azure_openai_deployment": "Deployment name",
-    "azure_openai_deployment_desc": "The name you gave your gpt-4o-transcribe deployment",
     "language": "Language",
     "language_desc": "Language code (e.g. en-IN, hi-IN)",
     "append_newline": "Append Newline",
@@ -31,7 +19,6 @@
   },
   "provider": {
     "soniox": "Soniox AI",
-    "sarvam": "Sarvam AI",
-    "azure": "Azure"
+    "sarvam": "Sarvam AI"
   }
 }

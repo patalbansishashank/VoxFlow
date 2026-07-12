@@ -13,15 +13,6 @@ ColumnLayout {
   property string editSonioxKey:     ""
   property string editSarvamKey:     ""
   property string editProvider:      "soniox"
-  property string editAzureModel:            "mai-transcribe-1.5"
-  property string editAzureSpeechEndpoint:   ""
-  property string editAzureSpeechKey:        ""
-  property string editAzureOpenaiEndpoint:   ""
-  property string editAzureOpenaiKey:        ""
-  property string editAzureOpenaiDeployment: ""
-  // The selected Azure model implies its service: "openai-streaming" is the Azure OpenAI
-  // (streaming) resource; everything else is the Azure Speech (batch) resource.
-  readonly property bool azureStreaming: editAzureModel === "openai-streaming"
   property string editLanguage:      "en-IN"
   property bool   editAppendNewline: true
   property var    editKeybinds:      ["SUPER + Z"]
@@ -42,12 +33,6 @@ ColumnLayout {
     editSonioxKey     = pluginApi.pluginSettings.sonioxApiKey     || ""
     editSarvamKey     = pluginApi.pluginSettings.sarvamApiKey     || ""
     editProvider      = pluginApi.pluginSettings.provider         || "soniox"
-    editAzureModel            = pluginApi.pluginSettings.azureModel            || "mai-transcribe-1.5"
-    editAzureSpeechEndpoint   = pluginApi.pluginSettings.azureSpeechEndpoint   || ""
-    editAzureSpeechKey        = pluginApi.pluginSettings.azureSpeechKey        || ""
-    editAzureOpenaiEndpoint   = pluginApi.pluginSettings.azureOpenaiEndpoint   || ""
-    editAzureOpenaiKey        = pluginApi.pluginSettings.azureOpenaiKey        || ""
-    editAzureOpenaiDeployment = pluginApi.pluginSettings.azureOpenaiDeployment || ""
     editLanguage      = pluginApi.pluginSettings.language         || "en-IN"
     editAppendNewline = pluginApi.pluginSettings.appendNewline    ?? true
     var kb = pluginApi.pluginSettings.keybinds
@@ -63,12 +48,6 @@ ColumnLayout {
     pluginApi.pluginSettings.sonioxApiKey     = root.editSonioxKey
     pluginApi.pluginSettings.sarvamApiKey     = root.editSarvamKey
     pluginApi.pluginSettings.provider         = root.editProvider
-    pluginApi.pluginSettings.azureModel            = root.editAzureModel
-    pluginApi.pluginSettings.azureSpeechEndpoint   = root.editAzureSpeechEndpoint
-    pluginApi.pluginSettings.azureSpeechKey        = root.editAzureSpeechKey
-    pluginApi.pluginSettings.azureOpenaiEndpoint   = root.editAzureOpenaiEndpoint
-    pluginApi.pluginSettings.azureOpenaiKey        = root.editAzureOpenaiKey
-    pluginApi.pluginSettings.azureOpenaiDeployment = root.editAzureOpenaiDeployment
     pluginApi.pluginSettings.language         = root.editLanguage
     pluginApi.pluginSettings.appendNewline    = root.editAppendNewline
     pluginApi.saveSettings()
@@ -185,100 +164,11 @@ ColumnLayout {
       label: pluginApi?.tr("settings.provider_desc") || "Speech-to-text service provider"
       model: [
         { key: "soniox", name: pluginApi?.tr("provider.soniox") || "Soniox AI" },
-        { key: "sarvam", name: pluginApi?.tr("provider.sarvam") || "Sarvam AI" },
-        { key: "azure",  name: pluginApi?.tr("provider.azure")  || "Azure" }
+        { key: "sarvam", name: pluginApi?.tr("provider.sarvam") || "Sarvam AI" }
       ]
       currentKey: root.editProvider
       onSelected: (key) => { root.editProvider = key; saveSettings() }
       defaultValue: "soniox"
-    }
-  }
-
-  // ================= AZURE =================
-  // One provider, a model dropdown. The chosen model routes to batch (Azure Speech) or
-  // streaming (Azure OpenAI) in the backend and decides which credential fields show below.
-  ColumnLayout {
-    Layout.fillWidth: true
-    Layout.topMargin: Style.marginS
-    spacing: Style.marginM
-    visible: root.editProvider === "azure"
-
-    NLabel {
-      label: pluginApi?.tr("settings.azure_model") || "Azure model"
-      description: pluginApi?.tr("settings.azure_model_desc")
-                  || "MAI-Transcribe is Microsoft's own state-of-the-art model (batch)"
-    }
-
-    NComboBox {
-      id: azureModelCombo
-      Layout.fillWidth: true
-      model: [
-        { key: "mai-transcribe-1.5", name: "MAI-Transcribe 1.5 (recommended)" },
-        { key: "mai-transcribe-1",   name: "MAI-Transcribe 1" },
-        { key: "llm-enhanced",       name: "LLM Speech (enhanced)" },
-        { key: "fast",               name: "Fast transcription" },
-        { key: "openai-streaming",   name: "GPT-4o Transcribe (streaming)" }
-      ]
-      currentKey: root.editAzureModel
-      onSelected: (key) => { root.editAzureModel = key; saveSettings() }
-      defaultValue: "mai-transcribe-1.5"
-    }
-
-    // ---- Batch models: Azure Speech resource creds ----
-    NTextInput {
-      Layout.fillWidth: true
-      visible: !root.azureStreaming
-      label: pluginApi?.tr("settings.azure_speech_endpoint") || "Azure Speech endpoint"
-      description: pluginApi?.tr("settings.azure_speech_endpoint_desc")
-                   || "e.g. https://your-resource.cognitiveservices.azure.com"
-      placeholderText: "https://your-resource.cognitiveservices.azure.com"
-      text: root.editAzureSpeechEndpoint
-      onTextChanged: { root.editAzureSpeechEndpoint = text; saveSettings() }
-    }
-
-    NTextInput {
-      Layout.fillWidth: true
-      visible: !root.azureStreaming
-      label: pluginApi?.tr("settings.azure_speech_key") || "Azure Speech key"
-      description: pluginApi?.tr("settings.azure_speech_key_desc")
-                   || "Key 1 or Key 2 from the Speech resource (Keys and Endpoint)"
-      placeholderText: "Enter Azure Speech key..."
-      text: root.editAzureSpeechKey
-      onTextChanged: { root.editAzureSpeechKey = text; saveSettings() }
-    }
-
-    // ---- Streaming: Azure OpenAI resource creds + deployment ----
-    NTextInput {
-      Layout.fillWidth: true
-      visible: root.azureStreaming
-      label: pluginApi?.tr("settings.azure_openai_endpoint") || "Azure OpenAI endpoint"
-      description: pluginApi?.tr("settings.azure_openai_endpoint_desc")
-                   || "e.g. https://your-resource.openai.azure.com"
-      placeholderText: "https://your-resource.openai.azure.com"
-      text: root.editAzureOpenaiEndpoint
-      onTextChanged: { root.editAzureOpenaiEndpoint = text; saveSettings() }
-    }
-
-    NTextInput {
-      Layout.fillWidth: true
-      visible: root.azureStreaming
-      label: pluginApi?.tr("settings.azure_openai_key") || "Azure OpenAI key"
-      description: pluginApi?.tr("settings.azure_openai_key_desc")
-                   || "Key 1 or Key 2 from the Azure OpenAI resource"
-      placeholderText: "Enter Azure OpenAI key..."
-      text: root.editAzureOpenaiKey
-      onTextChanged: { root.editAzureOpenaiKey = text; saveSettings() }
-    }
-
-    NTextInput {
-      Layout.fillWidth: true
-      visible: root.azureStreaming
-      label: pluginApi?.tr("settings.azure_openai_deployment") || "Deployment name"
-      description: pluginApi?.tr("settings.azure_openai_deployment_desc")
-                   || "The name you gave your gpt-4o-transcribe deployment"
-      placeholderText: "gpt-4o-transcribe"
-      text: root.editAzureOpenaiDeployment
-      onTextChanged: { root.editAzureOpenaiDeployment = text; saveSettings() }
     }
   }
 

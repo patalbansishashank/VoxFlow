@@ -80,16 +80,12 @@ bool WebSocketStream::open(const std::string& provider,
                            const std::string& api_key,
                            const std::string& language,
                            int sample_rate,
-                           TranscriptCallback cb,
-                           const std::string& endpoint,
-                           const std::string& deployment) {
+                           TranscriptCallback cb) {
     if (open_) return false;
 
     provider_ = provider;
     api_key_ = api_key;
     language_ = language;
-    endpoint_ = endpoint;
-    deployment_ = deployment;
     sample_rate_ = sample_rate;
     callback_ = std::move(cb);
     transcript_.clear();
@@ -107,16 +103,6 @@ bool WebSocketStream::open(const std::string& provider,
     std::string url;
     if (provider_ == "soniox") {
         url = "wss://stt-rt.soniox.com/transcribe-websocket";
-    } else if (provider_ == "azure") {
-        // Azure OpenAI realtime transcription. The endpoint is https://NAME.openai.azure.com;
-        // rewrite the scheme to wss:// and append the realtime transcription path. The model
-        // (deployment) is sent later in the session.update config, not in the URL.
-        std::string host = endpoint_;
-        while (!host.empty() && host.back() == '/') host.pop_back();
-        if (host.rfind("https://", 0) == 0)      host = host.substr(8);
-        else if (host.rfind("http://", 0) == 0)  host = host.substr(7);
-        else if (host.rfind("wss://", 0) == 0)   host = host.substr(6);
-        url = "wss://" + host + "/openai/v1/realtime?intent=transcription";
     } else {
         url = "wss://api.sarvam.ai/speech-to-text/ws"
               "?model=saaras:v3"
@@ -137,11 +123,6 @@ bool WebSocketStream::open(const std::string& provider,
     if (provider_ == "sarvam") {
         struct curl_slist* headers = nullptr;
         std::string auth = "api-subscription-key: " + api_key_;
-        headers = curl_slist_append(headers, auth.c_str());
-        curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
-    } else if (provider_ == "azure") {
-        struct curl_slist* headers = nullptr;
-        std::string auth = "api-key: " + api_key_;
         headers = curl_slist_append(headers, auth.c_str());
         curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
     }
@@ -195,14 +176,6 @@ bool WebSocketStream::send_flush() {
         // keep the socket open and read until `finished` arrives (see ws_thread_fn).
         return send_empty_frame();
     }
-    if (provider_ == "azure") {
-        // Azure OpenAI end-of-stream: commit the buffered audio. With server VAD disabled
-        // (turn_detection:null) the commit is what forces the model to transcribe the pending
-        // audio and emit the definitive `...transcription.completed`. (Periodic commits during
-        // recording keep this final chunk small so it finalizes fast.)
-        json commit = {{"type", "input_audio_buffer.commit"}};
-        return send_text(commit.dump());
-    }
     json flush = {{"type", "flush"}};
     return send_text(flush.dump());
 }
@@ -211,37 +184,7 @@ bool WebSocketStream::send_config() {
     if (provider_ == "soniox") {
         return send_soniox_config();
     }
-    if (provider_ == "azure") {
-        return send_azure_config();
-    }
     return true;
-}
-
-bool WebSocketStream::send_azure_config() {
-    // Configure a transcription-only session. turn_detection:null → we control segmentation
-    // via input_audio_buffer.commit; the deployment name is the model. rate matches our
-    // capture rate (no resampling — the server honours the declared rate).
-    json transcription = {{"model", deployment_}, {"delay", "medium"}};
-    if (!language_.empty() && language_ != "auto") {
-        std::string lang = language_;
-        auto dash = lang.find('-');
-        if (dash != std::string::npos) lang = lang.substr(0, dash);
-        transcription["language"] = lang;
-    }
-    json config = {
-        {"type", "session.update"},
-        {"session", {
-            {"type", "transcription"},
-            {"audio", {
-                {"input", {
-                    {"format", {{"type", "audio/pcm"}, {"rate", sample_rate_}}},
-                    {"turn_detection", nullptr},
-                    {"transcription", transcription}
-                }}
-            }}
-        }}
-    };
-    return send_text(config.dump());
 }
 
 bool WebSocketStream::send_soniox_config() {
@@ -352,17 +295,10 @@ void WebSocketStream::ws_thread_fn() {
 
     char buf[65536];
     bool sent_flush = false;
-    // Sarvam/Azure post-flush finalization window (see the flush-send and CURLE_AGAIN blocks).
+    // Sarvam post-flush finalization window (see the flush-send and CURLE_AGAIN blocks).
     std::chrono::steady_clock::time_point flush_at{};
     std::chrono::steady_clock::time_point last_flush_data{};
     bool got_flush_data = false;
-
-    const bool is_azure = (provider_ == "azure");
-    // Azure only: don't stream audio until the session.update is acknowledged (session.updated),
-    // and drive periodic commits so transcription flows during recording.
-    bool azure_ready = !is_azure;
-    bool audio_since_commit = false;
-    auto last_commit = std::chrono::steady_clock::now();
 
     while (!finished_) {
         if (!sent_flush) {
@@ -370,21 +306,13 @@ void WebSocketStream::ws_thread_fn() {
             {
                 std::lock_guard<std::mutex> lock(queue_mutex_);
                 qsize = send_queue_.size();
-                // Azure holds audio in the queue until the session is configured (azure_ready);
-                // nothing is lost — capture keeps buffering into send_queue_ meanwhile.
-                while (azure_ready && !send_queue_.empty()) {
+                while (!send_queue_.empty()) {
                     auto frame = std::move(send_queue_.front());
                     send_queue_.pop();
 
                     if (provider_ == "soniox") {
                         bool ok = send_binary(frame.data(), frame.size());
                         debug_log("[DEBUG] Sent binary frame %zu bytes: %s\n", frame.size(), ok ? "OK" : "FAIL");
-                    } else if (is_azure) {
-                        std::string b64 = base64_encode(frame.data(), frame.size());
-                        json msg = {{"type", "input_audio_buffer.append"}, {"audio", b64}};
-                        bool ok = send_text(msg.dump());
-                        audio_since_commit = true;
-                        debug_log("[DEBUG] Sent Azure frame %zu bytes: %s\n", frame.size(), ok ? "OK" : "FAIL");
                     } else {
                         std::string b64 = base64_encode(frame.data(), frame.size());
                         json msg = {
@@ -401,44 +329,22 @@ void WebSocketStream::ws_thread_fn() {
             }
             debug_log("[DEBUG] Drained %zu frames from queue, stopping=%d\n", qsize, stopping_.load());
 
-            // Azure: commit accumulated audio every ~2s so the model transcribes during
-            // recording (live tooltip) and the final commit on stop has only a small tail to
-            // finalize — that keeps the last words from lagging behind one big buffer.
-            if (is_azure && azure_ready && !stopping_ && audio_since_commit) {
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - last_commit).count() >= 2000) {
-                    json commit = {{"type", "input_audio_buffer.commit"}};
-                    send_text(commit.dump());
-                    last_commit = now;
-                    audio_since_commit = false;
-                }
-            }
-
-            if (stopping_ && send_queue_.empty() && azure_ready) {
+            if (stopping_ && send_queue_.empty()) {
                 debug_log("[DEBUG] Sending flush, transcript_='%s' latest_text_='%s'\n",
                           transcript_.c_str(), latest_text_.c_str());
-                if (is_azure && !audio_since_commit) {
-                    // Everything is already committed (a periodic commit just fired) — an empty
-                    // commit would only earn a benign error, so skip it and let the window close
-                    // on the quiet gap after the last completed.
-                    sent_flush = true;
-                    flush_sent_ = true;
-                    flush_at = std::chrono::steady_clock::now();
-                } else {
-                    send_flush();
-                    sent_flush = true;
-                    flush_sent_ = true;
-                    flush_at = std::chrono::steady_clock::now();
-                    last_flush_data = flush_at;
-                }
-                // Do NOT finish here. The flush FORCES the server to finalize the last
+                send_flush();
+                sent_flush = true;
+                flush_sent_ = true;
+                flush_at = std::chrono::steady_clock::now();
+                last_flush_data = flush_at;
+                // Do NOT finish here. Sarvam's flush FORCES the server to finalize the last
                 // utterance still buffered — the words spoken right before you hit stop, which
-                // it hadn't segmented yet (Sarvam: one more `data`; Azure: the final
-                // `...completed` after the commit). Finishing the instant we *sent* flush (the
-                // old behaviour) dropped exactly those words: the "last words cut off" bug. We
-                // keep reading; the post-flush window in the CURLE_AGAIN branch decides when the
-                // finalized output has stopped arriving. (Soniox waits for `finished:true`.)
+                // it hadn't segmented yet — and send them back as one more `data` message.
+                // Finishing the instant we *sent* flush (the old behaviour, whenever any
+                // earlier text had already arrived) dropped exactly those words: the "last
+                // words cut off, sometimes" bug. We keep reading; the post-flush window in the
+                // CURLE_AGAIN branch decides when the finalized output has stopped arriving.
+                // (Soniox takes the other path: it waits for the server's `finished:true`.)
             }
         }
 
@@ -569,98 +475,6 @@ void WebSocketStream::ws_thread_fn() {
                             result_cv_.notify_all();
                             break;
                         }
-                    } else if (provider_ == "azure") {
-                        std::string type = j.value("type", "");
-                        if (type == "session.updated") {
-                            // Config accepted — audio streaming can begin (see drain block).
-                            azure_ready = true;
-                        } else if (type ==
-                                   "conversation.item.input_audio_transcription.delta") {
-                            // Interim text for the segment currently being finalized.
-                            std::string delta = j.value("delta", "");
-                            if (!delta.empty()) {
-                                std::string preview;
-                                {
-                                    std::lock_guard<std::mutex> lock(result_mutex_);
-                                    tail_text_ += delta;
-                                    preview = transcript_;
-                                    if (!tail_text_.empty()) {
-                                        if (!preview.empty() &&
-                                            !std::isspace(static_cast<unsigned char>(
-                                                preview.back())))
-                                            preview += ' ';
-                                        preview += tail_text_;
-                                    }
-                                    latest_text_ = preview;
-                                }
-                                if (callback_) {
-                                    TranscriptSegment seg;
-                                    seg.text = preview;
-                                    seg.is_final = false;
-                                    callback_(seg);
-                                }
-                            }
-                        } else if (type ==
-                                   "conversation.item.input_audio_transcription.completed") {
-                            // A committed segment is finalized: append its full transcript
-                            // (the interim tail is now superseded), space-joining segments.
-                            std::string text = j.value("transcript", "");
-                            std::string preview;
-                            {
-                                std::lock_guard<std::mutex> lock(result_mutex_);
-                                tail_text_.clear();
-                                if (!text.empty()) {
-                                    unsigned char first =
-                                        static_cast<unsigned char>(text.front());
-                                    if (!transcript_.empty() &&
-                                        !std::isspace(static_cast<unsigned char>(
-                                            transcript_.back())) &&
-                                        !std::isspace(first) &&
-                                        std::strchr(".,!?;:)]}", first) == nullptr) {
-                                        transcript_ += ' ';
-                                    }
-                                    transcript_ += text;
-                                }
-                                latest_text_ = transcript_;
-                                preview = transcript_;
-                            }
-                            if (callback_) {
-                                TranscriptSegment seg;
-                                seg.text = preview;
-                                seg.is_final = false;
-                                callback_(seg);
-                            }
-                            if (flush_sent_.load()) {
-                                // The finalized tail after our stop-commit — record it so the
-                                // CURLE_AGAIN quiet window closes once completeds stop arriving.
-                                got_flush_data = true;
-                                last_flush_data = std::chrono::steady_clock::now();
-                            }
-                        } else if (type == "error") {
-                            std::string code, emsg = "Unknown Azure error";
-                            if (j.contains("error") && j["error"].is_object()) {
-                                code = j["error"].value("code", "");
-                                emsg = j["error"].value("message", emsg);
-                            }
-                            if (code == "input_audio_buffer_commit_empty") {
-                                // Benign: our stop-commit had nothing new to finalize (all
-                                // audio was already committed). We already hold the full text.
-                                if (flush_sent_.load()) {
-                                    finished_ = true;
-                                    result_cv_.notify_all();
-                                    break;
-                                }
-                                // Otherwise (shouldn't happen mid-recording) just ignore it.
-                            } else {
-                                {
-                                    std::lock_guard<std::mutex> lock(result_mutex_);
-                                    server_error_ = emsg;
-                                }
-                                finished_ = true;
-                                result_cv_.notify_all();
-                                break;
-                            }
-                        }
                     } else {
                         std::string type = j.value("type", "data");
 
@@ -738,9 +552,7 @@ void WebSocketStream::ws_thread_fn() {
                 auto since_data = std::chrono::duration_cast<std::chrono::milliseconds>(
                                       now - last_flush_data).count();
                 constexpr int kFlushQuietMs = 350;   // data settled -> finalized output done
-                // safety cap (flush empty, or slow). Azure's final commit -> completed can lag
-                // a touch more than Sarvam's `data`, so give it a longer net.
-                const int kFlushMaxMs = is_azure ? 4000 : 1500;
+                constexpr int kFlushMaxMs   = 1500;  // safety cap (flush empty, or slow)
                 if ((got_flush_data && since_data >= kFlushQuietMs) ||
                     since_flush >= kFlushMaxMs) {
                     debug_log("[DEBUG] Sarvam flush window closed (got_data=%d, since_flush=%lldms)\n",
