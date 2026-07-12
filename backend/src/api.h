@@ -18,6 +18,14 @@ public:
                          const std::string& api_key,
                          const std::string& language);
 
+    // Azure Speech "LLM Speech" batch transcription (MAI-Transcribe + Azure Speech models).
+    // One POST of the whole WAV; `azure_model` picks the model via the `definition` body.
+    ApiResult transcribe_azure(const std::vector<uint8_t>& wav_data,
+                               const std::string& api_key,
+                               const std::string& endpoint,
+                               const std::string& azure_model,
+                               const std::string& language);
+
 private:
     ApiResult transcribe_soniox(const std::vector<uint8_t>& wav_data,
                                  const std::string& api_key,

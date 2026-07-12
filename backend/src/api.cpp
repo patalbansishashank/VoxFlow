@@ -136,6 +136,113 @@ ApiResult ApiClient::transcribe_sarvam(const std::vector<uint8_t>& wav_data,
     return result;
 }
 
+ApiResult ApiClient::transcribe_azure(const std::vector<uint8_t>& wav_data,
+                                      const std::string& api_key,
+                                      const std::string& endpoint,
+                                      const std::string& azure_model,
+                                      const std::string& language) {
+    ApiResult result;
+
+    if (endpoint.empty()) {
+        result.error_message = "Azure Speech endpoint not configured";
+        return result;
+    }
+    if (wav_data.size() < 44 || std::memcmp(wav_data.data(), "RIFF", 4) != 0) {
+        result.error_message = "Not a valid WAV file";
+        return result;
+    }
+
+    auto curl = make_handle();
+    if (!curl) {
+        result.error_message = "Failed to initialize curl";
+        return result;
+    }
+
+    // Trim any trailing slash so we don't produce "...azure.com//speechtotext".
+    std::string base = endpoint;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    std::string url = base + "/speechtotext/transcriptions:transcribe?api-version=2025-10-15";
+    curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+
+    CurlHeaders headers;
+    std::string auth_header = "Ocp-Apim-Subscription-Key: " + api_key;
+    headers.reset(curl_slist_append(headers.release(), auth_header.c_str()));
+    curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers.get());
+
+    // Locale hint (optional): the LLM Speech API takes locales like "en"; pass the base
+    // language, dropping any region suffix (en-IN -> en).
+    std::string locale = language;
+    auto dash = locale.find('-');
+    if (dash != std::string::npos) locale = locale.substr(0, dash);
+
+    // `azure_model` selects the model via the `definition` body:
+    //   fast           -> plain fast transcription (no enhancedMode)
+    //   llm-enhanced   -> LLM Speech multimodal model, transcribe task
+    //   mai-transcribe-* (or any explicit id) -> that model under enhancedMode
+    json definition;
+    if (!locale.empty() && locale != "auto") {
+        definition["locales"] = json::array({locale});
+    }
+    if (azure_model == "fast") {
+        // no enhancedMode
+    } else if (azure_model == "llm-enhanced") {
+        definition["enhancedMode"] = {{"enabled", true}, {"task", "transcribe"}};
+    } else {
+        definition["enhancedMode"] = {{"enabled", true}, {"model", azure_model}};
+    }
+
+    CurlMime mime(curl_mime_init(curl.get()));
+    add_mime_file(mime.get(), "audio", wav_data);
+    add_mime_part(mime.get(), "definition", definition.dump());
+    curl_easy_setopt(curl.get(), CURLOPT_MIMEPOST, mime.get());
+
+    std::string response;
+    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl.get());
+    if (res != CURLE_OK) {
+        result.error_message = curl_easy_strerror(res);
+        result.error_code = static_cast<int>(res);
+        return result;
+    }
+
+    long http_code = 0;
+    curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200) {
+        result.error_code = static_cast<int>(http_code);
+        result.error_message = "HTTP " + std::to_string(http_code) + ": " + response.substr(0, 300);
+        return result;
+    }
+
+    try {
+        auto j = json::parse(response);
+        // Fast/LLM Speech response: combinedPhrases[].text holds the full transcript.
+        if (j.contains("combinedPhrases") && j["combinedPhrases"].is_array()) {
+            std::string text;
+            for (auto& p : j["combinedPhrases"]) {
+                std::string t = p.value("text", "");
+                if (t.empty()) continue;
+                if (!text.empty()) text += ' ';
+                text += t;
+            }
+            result.text = text;
+            result.success = !text.empty();
+            if (text.empty()) result.error_message = "Empty transcript";
+        } else if (j.contains("error")) {
+            if (j["error"].is_object())
+                result.error_message = j["error"].value("message", "Azure error");
+            else
+                result.error_message = j["error"].get<std::string>();
+        } else {
+            result.error_message = "Unexpected response: " + response.substr(0, 200);
+        }
+    } catch (...) {
+        result.error_message = "Failed to parse response";
+    }
+
+    return result;
+}
+
 ApiResult ApiClient::transcribe_soniox(const std::vector<uint8_t>& wav_data,
                                         const std::string& api_key,
                                         const std::string& language) {

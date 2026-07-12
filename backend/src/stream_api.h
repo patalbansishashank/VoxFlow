@@ -32,11 +32,16 @@ public:
     WebSocketStream(const WebSocketStream&) = delete;
     WebSocketStream& operator=(const WebSocketStream&) = delete;
 
+    // endpoint + deployment are used only by provider "azure" (Azure OpenAI realtime): the
+    // resource endpoint (https://NAME.openai.azure.com) and the gpt-4o-transcribe deployment
+    // name. Ignored by soniox/sarvam.
     bool open(const std::string& provider,
               const std::string& api_key,
               const std::string& language,
               int sample_rate,
-              TranscriptCallback cb = nullptr);
+              TranscriptCallback cb = nullptr,
+              const std::string& endpoint = "",
+              const std::string& deployment = "");
 
     bool send_audio(const int16_t* samples, size_t count);
 
@@ -61,6 +66,7 @@ private:
     void ws_thread_fn();
     bool send_config();
     bool send_soniox_config();
+    bool send_azure_config();
     bool send_text(const std::string& msg);
     bool send_binary(const void* data, size_t len);
     bool send_empty_frame();
@@ -77,6 +83,8 @@ private:
     std::string provider_;
     std::string api_key_;
     std::string language_;
+    std::string endpoint_;      // azure: resource endpoint (https://NAME.openai.azure.com)
+    std::string deployment_;    // azure: gpt-4o-transcribe deployment name
     int sample_rate_ = 16000;
     TranscriptCallback callback_;
 
