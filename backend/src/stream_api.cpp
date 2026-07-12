@@ -167,14 +167,17 @@ bool WebSocketStream::send_empty_frame() {
 
 bool WebSocketStream::send_flush() {
     if (provider_ == "soniox") {
-        // Soniox: WebSocket close frame signals end-of-stream, server returns final transcript
-        size_t sent = 0;
-        CURLcode res = curl_ws_send(curl_, nullptr, 0, &sent, 0, CURLWS_CLOSE);
-        return res == CURLE_OK;
-    } else {
-        json flush = {{"type", "flush"}};
-        return send_text(flush.dump());
+        // Soniox end-of-stream is an EMPTY WebSocket frame (per the API docs), NOT a close
+        // frame. On the empty frame the server finalizes the still-pending tail audio (a
+        // realtime STT always lags the audio by a few hundred ms), streams the REMAINING
+        // final tokens, and sends a `{"tokens":[],"finished":true}` response before it
+        // closes. A close frame instead races that finalization and tears the socket down
+        // early — dropping the last words (the "transcription cut off at the end" bug). We
+        // keep the socket open and read until `finished` arrives (see ws_thread_fn).
+        return send_empty_frame();
     }
+    json flush = {{"type", "flush"}};
+    return send_text(flush.dump());
 }
 
 bool WebSocketStream::send_config() {
@@ -292,6 +295,10 @@ void WebSocketStream::ws_thread_fn() {
 
     char buf[65536];
     bool sent_flush = false;
+    // Sarvam post-flush finalization window (see the flush-send and CURLE_AGAIN blocks).
+    std::chrono::steady_clock::time_point flush_at{};
+    std::chrono::steady_clock::time_point last_flush_data{};
+    bool got_flush_data = false;
 
     while (!finished_) {
         if (!sent_flush) {
@@ -328,18 +335,16 @@ void WebSocketStream::ws_thread_fn() {
                 send_flush();
                 sent_flush = true;
                 flush_sent_ = true;
-                {
-                    std::lock_guard<std::mutex> lock(result_mutex_);
-                    debug_log("[DEBUG] After flush, transcript_='%s'\n", transcript_.c_str());
-                    // For Sarvam: transcript already received before flush, finish immediately.
-                    // For Soniox: continue recv loop to capture final tokens after close frame.
-                    if (!transcript_.empty() && provider_ != "soniox") {
-                        debug_log("[DEBUG] Flush sent, transcript already available, finishing\n");
-                        finished_ = true;
-                        result_cv_.notify_all();
-                        break;
-                    }
-                }
+                flush_at = std::chrono::steady_clock::now();
+                last_flush_data = flush_at;
+                // Do NOT finish here. Sarvam's flush FORCES the server to finalize the last
+                // utterance still buffered — the words spoken right before you hit stop, which
+                // it hadn't segmented yet — and send them back as one more `data` message.
+                // Finishing the instant we *sent* flush (the old behaviour, whenever any
+                // earlier text had already arrived) dropped exactly those words: the "last
+                // words cut off, sometimes" bug. We keep reading; the post-flush window in the
+                // CURLE_AGAIN branch decides when the finalized output has stopped arriving.
+                // (Soniox takes the other path: it waits for the server's `finished:true`.)
             }
         }
 
@@ -505,9 +510,13 @@ void WebSocketStream::ws_thread_fn() {
                                         callback_(seg);
                                     }
                                     if (flush_sent_.load()) {
-                                        finished_ = true;
-                                        result_cv_.notify_all();
-                                        break;
+                                        // This is the flush's finalized tail. Record it and
+                                        // keep the window open a beat (kFlushQuietMs) in case
+                                        // the flush emits more than one segment — the
+                                        // CURLE_AGAIN branch closes the window once data
+                                        // stops arriving.
+                                        got_flush_data = true;
+                                        last_flush_data = std::chrono::steady_clock::now();
                                     }
                                 }
                             }
@@ -529,6 +538,30 @@ void WebSocketStream::ws_thread_fn() {
                 }
             }
         } else if (res == CURLE_AGAIN) {
+            // Sarvam post-flush finalization window: after the flush, finish once the
+            // server's finalized output has stopped arriving — a short quiet gap after the
+            // last post-flush `data` (kFlushQuietMs), or a hard cap (kFlushMaxMs) if the flush
+            // produced nothing new because everything was already finalized while streaming.
+            // The cap is deliberately generous: better a brief wait than clipping the last
+            // words. `got_flush_data` gates the quiet gap so we never mistake the flush's own
+            // network+processing latency for "done" and finish before the tail arrives.
+            if (sent_flush && provider_ != "soniox") {
+                auto now = std::chrono::steady_clock::now();
+                auto since_flush = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       now - flush_at).count();
+                auto since_data = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      now - last_flush_data).count();
+                constexpr int kFlushQuietMs = 350;   // data settled -> finalized output done
+                constexpr int kFlushMaxMs   = 1500;  // safety cap (flush empty, or slow)
+                if ((got_flush_data && since_data >= kFlushQuietMs) ||
+                    since_flush >= kFlushMaxMs) {
+                    debug_log("[DEBUG] Sarvam flush window closed (got_data=%d, since_flush=%lldms)\n",
+                              (int)got_flush_data, (long long)since_flush);
+                    finished_ = true;
+                    result_cv_.notify_all();
+                    break;
+                }
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         } else {
             break;
